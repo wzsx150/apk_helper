@@ -1,0 +1,31 @@
+#!/bin/bash
+#
+# Copyright (C) 2014 The Android Open Source Project
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#      http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+
+set -e
+
+FRAMEWORK_RES_APK=${ANDROID_PRODUCT_OUT}/system/framework/framework-res.apk
+
+aapt2 compile --dir res -o compiled.flata
+aapt2 link -I $FRAMEWORK_RES_APK --manifest AndroidManifest.xml -o overlay.apk compiled.flata \
+    --no-auto-version
+rm compiled.flata
+
+# Navigate back a directory so the idmap can find the overlays in the test data directory when being
+# loaded during testing.
+cd ../
+idmap2 create --target-apk-path overlayable/overlayable.apk \
+    --overlay-apk-path overlay/overlay.apk --idmap-path overlay/overlay.idmap

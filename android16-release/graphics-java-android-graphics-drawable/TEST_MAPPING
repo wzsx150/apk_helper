@@ -1,0 +1,12 @@
+{
+  "presubmit": [
+    {
+      "name": "CtsGraphicsTestCases_cts_icontest",
+      "file_patterns": ["(/|^)Icon\\.java"]
+    },
+    {
+
+      "name": "FrameworksCoreTests_drawable"
+    }
+  ]
+}
