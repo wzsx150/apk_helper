@@ -1,9 +1,32 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 
+import sys
+import ctypes
+
+kernel32 = ctypes.WinDLL('kernel32', use_last_error=True)  # Windows API 定义
+def attach_to_parent_console():
+    """GUI程序主动附着到父进程（cmd）的控制台，实现输出+阻塞"""
+    # 检测标准输出是否已重定向（> 或 >>）
+    stdout_handle = kernel32.GetStdHandle(-11)  # STD_OUTPUT_HANDLE
+    stderr_handle = kernel32.GetStdHandle(-12)  # STD_ERROR_HANDLE
+    stdout_redirected = stdout_handle and kernel32.GetFileType(stdout_handle) == 1  # FILE_TYPE_DISK
+    stderr_redirected = stderr_handle and kernel32.GetFileType(stderr_handle) == 1
+    
+    # 尝试附着到父进程的控制台
+    if kernel32.AttachConsole(-1):  # -1 表示附着到父进程（cmd）
+        # 只有未重定向时才重置输出，否则保留重定向
+        if not stdout_redirected:
+            sys.stdout = open('CONOUT$', 'w', encoding='utf-8', buffering=1)
+        if not stderr_redirected:
+            sys.stderr = open('CONOUT$', 'w', encoding='utf-8', buffering=1)
+        return True
+    return False
+# 尝试附着到父控制台（cmd运行时生效，双击时无效果），用于解决disable打包模式下命令行无法输出的问题。
+attach_to_parent_console()
+
 import os
 import winreg
-import sys
 import platform
 import subprocess
 import threading
@@ -17,7 +40,7 @@ import logging
 import struct
 import time
 from io import BytesIO
-from PIL import Image, ImageDraw, ImageChops, ImageOps
+from PIL import Image, ImageDraw
 
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QWIDGETSIZE_MAX, QHeaderView,
@@ -33,6 +56,9 @@ from PyQt5.QtCore import Qt, QSize, QTimer, QTranslator, QCoreApplication, QThre
 
 # 使用 nuitka 打包成32位exe的命令：
 # py3.8_32 -m nuitka --standalone --assume-yes-for-downloads --windows-console-mode=disable --output-dir=dist --enable-plugin=pyqt5 --windows-icon-from-ico=1.ico --include-data-files=1.ico=./ --include-data-files=aapt2.exe=./ --include-data-files=*.bat=./ --include-raw-dir=translations=translations apk_helper.py
+# 控制台模式说明（--windows-console-mode=disable）：打包成GUI程序（无控制台窗口），命令行执行时也不会输出内容，但可以使用 > 和 >> 重定向输出。
+# 看似 attach 模式更合适，但是会有其他问题，比如运行cmd命令会报句柄错误。
+# 所以最终采用 disable 模式 + 代码输出到控制台的方案。
 
 # aapt2 版本：2.19 (build-tools_r33.0.3内置的版本)，是32位exe程序。aapt2.exe从2.20开始，默认是64位exe程序。解析出来的部分字段名称也不一样。
 # 本程序均基于该版本的 aapt2 输出的内容，进行解析得到的结果。
@@ -41,8 +67,8 @@ from PyQt5.QtCore import Qt, QSize, QTimer, QTranslator, QCoreApplication, QThre
 # 全局变量和常量定义
 # ============================================================================
 
-b_ver = "4.0"
-b_date = "20260310"
+b_ver = "4.1"
+b_date = "20260311"
 b_auth = "wzsx150"
 is_arch_64bit = True    # 暂时没用，主要是用于不同位数系统时不同处理方式
 BASE_DIR = ""    # 基目录，可能会在临时目录
@@ -2466,7 +2492,7 @@ class APKParser:
             density: 分辨率信息（如mdpi, hdpi等），可选
         """
         try:
-            cache_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'cache')
+            cache_dir = os.path.join(os.getcwd(), 'cache')
             if not os.path.exists(cache_dir):
                 os.makedirs(cache_dir, exist_ok=True)
             
@@ -8574,8 +8600,8 @@ def main():
         epilog='''
 示例:
   %(prog)s app.apk                    # 解析单个APK文件（启动GUI）
-  %(prog)s -b E:\\APK                  # 批量测试解析目录下所有APK文件（保存所有XML图标）
-  %(prog)s -l DEBUG app.apk           # 设置日志级别为DEBUG
+  %(prog)s -b E:\\APK                  # 批量解析该目录下所有APK文件的XML图标（保存所有XML图标到cache目录）
+  %(prog)s -l DEBUG app.apk           # 设置日志级别为DEBUG并启动GUI
         '''
     )
     parser.add_argument('apk_file', nargs='?', help='要解析的APK文件路径')
@@ -8584,7 +8610,7 @@ def main():
                        default='INFO', 
                        help='设置日志级别 (默认: INFO)。支持简写: D=DEBUG, I=INFO, W=WARNING, E=ERROR')
     parser.add_argument('-b', '--batch-dir', metavar='DIR',
-                       help='批量测试解析指定目录下所有APK文件，并保存所有XML图标')
+                       help='批量解析指定目录下所有APK文件的XML图标，并保存所有XML图标到cache目录')
     args = parser.parse_args()
     
     # 日志级别简写映射
@@ -8657,4 +8683,5 @@ def main():
 
 
 if __name__ == '__main__':
+    print('')  # 先输出一个空行，为了适应 nuitka 打包成GUI程序后，在控制台输出内容
     main()

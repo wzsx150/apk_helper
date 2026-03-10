@@ -1,9 +1,32 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 
+import sys
+import ctypes
+
+kernel32 = ctypes.WinDLL('kernel32', use_last_error=True)  # Windows API 定义
+def attach_to_parent_console():
+    """GUI程序主动附着到父进程（cmd）的控制台，实现输出+阻塞"""
+    # 检测标准输出是否已重定向（> 或 >>）
+    stdout_handle = kernel32.GetStdHandle(-11)  # STD_OUTPUT_HANDLE
+    stderr_handle = kernel32.GetStdHandle(-12)  # STD_ERROR_HANDLE
+    stdout_redirected = stdout_handle and kernel32.GetFileType(stdout_handle) == 1  # FILE_TYPE_DISK
+    stderr_redirected = stderr_handle and kernel32.GetFileType(stderr_handle) == 1
+    
+    # 尝试附着到父进程的控制台
+    if kernel32.AttachConsole(-1):  # -1 表示附着到父进程（cmd）
+        # 只有未重定向时才重置输出，否则保留重定向
+        if not stdout_redirected:
+            sys.stdout = open('CONOUT$', 'w', encoding='utf-8', buffering=1)
+        if not stderr_redirected:
+            sys.stderr = open('CONOUT$', 'w', encoding='utf-8', buffering=1)
+        return True
+    return False
+# 尝试附着到父控制台（cmd运行时生效，双击时无效果），用于解决disable打包模式下命令行无法输出的问题。
+attach_to_parent_console()
+
 import os
 import winreg
-import sys
 import platform
 import subprocess
 import threading
@@ -41,6 +64,9 @@ from PyQt5.QtCore import Qt, QSize, QTimer, QTranslator, QCoreApplication, QThre
 
 # 使用 nuitka 打包成32位exe的命令：
 # py3.8_32 -m nuitka --standalone --assume-yes-for-downloads --windows-console-mode=disable --output-dir=dist --enable-plugin=pyqt5 --include-package-data=androguard --windows-icon-from-ico=1.ico --include-data-files=1.ico=./ --include-data-files=*.bat=./ --include-raw-dir=translations=translations apk_helper.py
+# 控制台模式说明（--windows-console-mode=disable）：打包成GUI程序（无控制台窗口），命令行执行时也不会输出内容，但可以使用 > 和 >> 重定向输出。
+# 看似 attach 模式更合适，但是会有其他问题，比如运行cmd命令会报句柄错误。
+# 所以最终采用 disable 模式 + 代码输出到控制台的方案。
 
 
 # ============================================================================
@@ -8847,4 +8873,5 @@ def main():
 
 
 if __name__ == '__main__':
+    print('')  # 先输出一个空行，为了适应 nuitka 打包成GUI程序后，在控制台输出内容
     main()
