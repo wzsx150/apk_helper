@@ -67,7 +67,7 @@ from PyQt5.QtCore import Qt, QSize, QTimer, QTranslator, QCoreApplication, QThre
 # 全局变量和常量定义
 # ============================================================================
 
-b_ver = "4.2"
+b_ver = "5.0"
 b_date = "20260315"
 b_auth = "wzsx150"
 is_arch_64bit = True    # 暂时没用，主要是用于不同位数系统时不同处理方式
@@ -6397,7 +6397,7 @@ class ApkHelper(QMainWindow):
         # 定义程序版本信息
         self.version = b_ver
         self.setWindowTitle(f"APK文件信息解析工具-APK Helper {self.version}")
-        self.setGeometry(100, 100, 400, 580)
+        self.setGeometry(100, 100, 400, 524)  # 整个主窗口尺寸(左距离, 上距离, 宽度, 高度)，
         
         # 让窗口显示在屏幕中心
         self.center_window()
@@ -7148,7 +7148,7 @@ class ApkHelper(QMainWindow):
         icon_info_layout.setAlignment(Qt.AlignCenter)
         
         icon_layout.addLayout(icon_info_layout)
-        top_layout.addWidget(icon_group)
+        top_layout.addWidget(icon_group, 0, Qt.AlignTop)  # 图标区域居上对齐
         
         # 添加伸缩空间，将按钮推到右侧
         top_layout.addStretch()
@@ -7237,13 +7237,23 @@ class ApkHelper(QMainWindow):
         # 将按钮容器添加到顶部布局
         top_layout.addWidget(button_container)
         top_layout.setContentsMargins(0, 0, 0, 0)  # 左、上、右、下的边距值
-        self.main_layout.addWidget(top_widget)
+        # 将top_widget添加到splitter中，支持与应用信息区域拖拽
+        self.main_splitter.addWidget(top_widget)
         
         
-        #### 应用基本信息区域
-        self.app_info_group = QGroupBox("基本信息")
+        #### 应用基本信息区域（使用选项卡包含基本信息和权限信息）
+        self.app_info_group = QGroupBox("")
         app_info_layout = QVBoxLayout(self.app_info_group)
         app_info_layout.setContentsMargins(3, 3, 3, 3)    # 内部组件的间距
+        
+        # 创建选项卡部件
+        self.app_info_tab_widget = QTabWidget()
+        self.app_info_tab_widget.setDocumentMode(True)
+        
+        # === 基本信息选项卡 ===
+        basic_info_widget = QWidget()
+        basic_info_layout = QVBoxLayout(basic_info_widget)
+        basic_info_layout.setContentsMargins(0, 0, 0, 0)
         
         # 创建堆叠窗口部件来管理表格和文本框
         self.app_info_stacked_widget = QStackedWidget()
@@ -7285,13 +7295,13 @@ class ApkHelper(QMainWindow):
         self.app_info_stacked_widget.addWidget(self.app_info_table)      # 索引 0 - 表格视图
         self.app_info_stacked_widget.addWidget(self.app_info_content_box) # 索引 1 - 内容框视图
         
-        app_info_layout.addWidget(self.app_info_stacked_widget)
-        self.main_splitter.addWidget(self.app_info_group)
+        basic_info_layout.addWidget(self.app_info_stacked_widget)
+        self.app_info_tab_widget.addTab(basic_info_widget, "基本信息")
         
-        #### 权限信息区域
-        permission_group = QGroupBox("权限信息")
-        permission_layout = QVBoxLayout(permission_group)
-        permission_layout.setContentsMargins(3, 3, 3, 3)    # 内部组件的间距
+        # === 权限信息选项卡 ===
+        permission_widget = QWidget()
+        permission_layout = QVBoxLayout(permission_widget)
+        permission_layout.setContentsMargins(0, 0, 0, 0)
         
         self.permission_table = CustomTableWidget()
         self.permission_table.setColumnCount(2)  # 两列的表格
@@ -7301,7 +7311,7 @@ class ApkHelper(QMainWindow):
         header = self.permission_table.horizontalHeader()
         header.setFixedHeight(2)  # 表头高度设为很小，方便拖拽
         header.setSectionResizeMode(0, QHeaderView.Interactive)
-        header.setSectionResizeMode(1, QHeaderView.Stretch)
+        header.setSectionResizeMode(1, QHeaderView.ResizeToContents)
         
         # 设置表格为可选择但不可编辑，支持单元格选择和文本拖选
         self.permission_table.setEditTriggers(self.permission_table.NoEditTriggers)
@@ -7313,7 +7323,10 @@ class ApkHelper(QMainWindow):
         self.permission_table.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         self.permission_table.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         permission_layout.addWidget(self.permission_table)
-        self.main_splitter.addWidget(permission_group)
+        self.app_info_tab_widget.addTab(permission_widget, "权限信息")
+        
+        app_info_layout.addWidget(self.app_info_tab_widget)
+        self.main_splitter.addWidget(self.app_info_group)
         
         #### 签名信息区域
         sig_info_group = QGroupBox("签名信息")
@@ -7329,8 +7342,8 @@ class ApkHelper(QMainWindow):
         sig_horizontal_layout.addWidget(self.sig_info_text)
         
         # 添加签名详情按钮
-        self.show_signature_details_btn = QPushButton(".")
-        self.show_signature_details_btn.setFixedWidth(16)
+        self.show_signature_details_btn = QPushButton("..")
+        self.show_signature_details_btn.setFixedWidth(24)
         self.show_signature_details_btn.setToolTip("查看完整的APK签名详情信息")
         self.show_signature_details_btn.clicked.connect(self.show_signature_details_dialog)
         sig_horizontal_layout.addWidget(self.show_signature_details_btn)
@@ -7351,7 +7364,7 @@ class ApkHelper(QMainWindow):
         self.main_splitter.addWidget(file_info_group)
         
         # 设置QSplitter的初始大小比例，可以调整不同区域的初始高度。基于这个比例进行显示，后面加载内容后会更新比例。
-        self.main_splitter.setSizes([480, 220, 150, 150])
+        self.main_splitter.setSizes([160, 500, 200, 140])
         
         # 添加QSplitter到主布局
         self.main_layout.addWidget(self.main_splitter)
@@ -7379,15 +7392,16 @@ class ApkHelper(QMainWindow):
         self.app_info_table.setRowCount(0)
         self.permission_table.setRowCount(0)
         self.app_info_table.setColumnWidth(0, 120)  # 设置第一列的列宽
-        self.permission_table.setColumnWidth(0, 200)  # 设置第一列的列宽
+        self.permission_table.setColumnWidth(0, 230)  # 设置第一列的列宽
         
         # 应用基本信息：设置应用基本信息表格的属性名
         properties = [
             "应用包名",
             "默认应用名",
             "中文应用名",
-            "版本号(架构)",
+            "版本号",
             "内部版本号",
+            "CPU架构",
             "最低兼容SDK版本",
             "目标适配SDK版本",
             "编译构建SDK版本",
@@ -7410,9 +7424,9 @@ class ApkHelper(QMainWindow):
         
         # 根据应用基本信息表格的高度，更新调整整个主窗口中几个显示区域的比例，目的就是为了让应用信息刚好显示完整（不会显示竖向滚动条）
         height = self.main_splitter.height()  # 主窗口的高度
-        app_info_sh = int(1000 * (total_height+40) / height)  # 多增加40个像素作为区域框额外的高度。这样换算出来实际像素对应的高度比例值
+        app_info_sh = int(1000 * (total_height+36) / height)  # 多增加36个像素作为区域框额外的高度。这样换算出来实际像素对应的高度比例值
         # app_logger.debug(f"main_splitter高度={height}像素, app_info_table高度比例值={app_info_sh}")
-        self.main_splitter.setSizes([app_info_sh, 700-app_info_sh, 150, 150])  # 700 给前两个区域，300 给后两个区域，共1000比例值，按比例分摊高度。
+        self.main_splitter.setSizes([160, app_info_sh, 700-app_info_sh, 140])  # 160 给图标区域，动态调整应用信息、签名信息区域，最后文件信息固定。最终按比例分摊各区域。
 
     def center_window(self):
         """
@@ -7438,10 +7452,12 @@ class ApkHelper(QMainWindow):
         显示应用基本信息。
         
         将apk_info中的信息显示在基本信息表格中，包括：
-        包名、应用名、中文应用名、版本号、内部版本号、SDK版本等。
+        包名、应用名、中文应用名、版本号、内部版本号、CPU架构、SDK版本等。
         SDK版本会自动转换为对应的Android版本名称。
-        版本号行会融合显示CPU架构支持信息。
+        CPU架构信息独立成一行显示。
         """
+        # 切换到基本信息选项卡
+        self.app_info_tab_widget.setCurrentIndex(0)
         # 切换到表格视图
         self.app_info_stacked_widget.setCurrentIndex(0)  # 显示表格
         
@@ -7469,20 +7485,15 @@ class ApkHelper(QMainWindow):
         # 架构支持信息处理
         arch_support = self.apk_info.get('arch_support', {})
         arch_display_text = arch_support.get('display_text', '')
-        
-        if arch_display_text:
-            version_name_display = f"{version_name} ({arch_display_text})"
-        else:
-            version_name_display = version_name
-        
-        version_tooltip = self._build_arch_tooltip(arch_support)
+        arch_tooltip = self._build_arch_tooltip(arch_support)
 
         # 添加到表格
         self.add_table_row(self.app_info_table, "应用包名", package_name)
         self.add_table_row(self.app_info_table, "默认应用名", default_app_name)
         self.add_table_row(self.app_info_table, "中文应用名", chinese_app_name)
-        self.add_table_row(self.app_info_table, "版本号(架构)", version_name_display, version_tooltip)
+        self.add_table_row(self.app_info_table, "版本号", version_name)
         self.add_table_row(self.app_info_table, "内部版本号", version_code)
+        self.add_table_row(self.app_info_table, "CPU架构", arch_display_text if arch_display_text else "-", arch_tooltip)
         self.add_table_row(self.app_info_table, "最低兼容SDK版本", min_sdk_display)
         self.add_table_row(self.app_info_table, "目标适配SDK版本", target_sdk_display)
         self.add_table_row(self.app_info_table, "编译构建SDK版本", compile_sdk_display)
@@ -7566,6 +7577,8 @@ class ApkHelper(QMainWindow):
         Args:
             message: 要显示的状态信息文本
         """
+        # 切换到基本信息选项卡
+        self.app_info_tab_widget.setCurrentIndex(0)
         # 切换到内容框视图
         self.app_info_stacked_widget.setCurrentIndex(1)  # 显示内容框
         self.app_info_content_box.setTextColor(Qt.blue)    # 设置文本颜色为蓝色
@@ -7582,6 +7595,8 @@ class ApkHelper(QMainWindow):
         Args:
             error_msg: 要显示的错误信息文本
         """
+        # 切换到基本信息选项卡
+        self.app_info_tab_widget.setCurrentIndex(0)
         # 切换到内容框视图
         self.app_info_stacked_widget.setCurrentIndex(1)  # 显示内容框
         self.app_info_content_box.setTextColor(Qt.red)
@@ -7600,6 +7615,8 @@ class ApkHelper(QMainWindow):
         permissions = self.apk_info['permissions'] or []
         if not permissions:
             self.add_table_row(self.permission_table, "无", "未申请任何权限")
+            # 根据内容自动调整第二列宽度
+            self.permission_table.resizeColumnToContents(1)
             return
             
         # 将权限分为三类：危险权限、普通权限、未知权限
@@ -7626,6 +7643,9 @@ class ApkHelper(QMainWindow):
         
         for perm in unknown_perms:
             self.add_table_row(self.permission_table, perm, "未知权限")
+        
+        # 根据内容自动调整第二列宽度
+        self.permission_table.resizeColumnToContents(1)
 
     def display_signature_info(self):
         """
@@ -8059,8 +8079,7 @@ class ApkHelper(QMainWindow):
             "其他架构：\n"
             "  - mips/mips64：MIPS架构 (旧架构)\n"
             "  - riscv64：RISC-V架构 (非主流新兴架构)\n\n"
-            "显示说明：\n"
-            "  - 纯应用：纯Java/Kotlin应用\n"
+            "  - 纯应用：纯Java/Kotlin应用，无架构限制\n"
             "  - 未知：无法识别的架构\n\n"
             "兼容说明：\n"
             "  - 32位应用理论上可在同架构64位系统上运行，如armeabi-v7a架构的应用可以在arm64设备上运行\n"
@@ -8241,7 +8260,19 @@ class ApkHelper(QMainWindow):
         self.worker_thread.start()
     
     def validate_apk_file(self, apk_path):
-        """验证APK文件是否有效（检查是否为ZIP格式并包含AndroidManifest.xml）"""
+        """验证APK文件是否有效（检查路径是否为文件、是否为ZIP格式并包含AndroidManifest.xml）"""
+        # 检查路径是否存在
+        if not os.path.exists(apk_path):
+            return False, f"解析失败，路径不存在：\n{apk_path}"
+        
+        # 检查路径是否为目录
+        if os.path.isdir(apk_path):
+            return False, f"解析失败，路径是目录而非文件：\n{apk_path}"
+        
+        # 检查路径是否为文件
+        if not os.path.isfile(apk_path):
+            return False, f"解析失败，路径不是有效的文件：\n{apk_path}"
+        
         try:
             with zipfile.ZipFile(apk_path, 'r') as zip_file:
                 # 1.检查是否为有效的ZIP文件
@@ -8254,8 +8285,6 @@ class ApkHelper(QMainWindow):
                 return True, "验证通过"
         except zipfile.BadZipFile:
             return False, f"解析失败，不是一个有效的APK文件(不是有效的ZIP格式)：\n{apk_path}"
-        except FileNotFoundError:
-            return False, f"解析失败，文件不存在：\n{apk_path}"
         except PermissionError:
             return False, f"解析失败，没有权限访问文件：\n{apk_path}"
         except Exception as e:
