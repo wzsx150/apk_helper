@@ -46,7 +46,7 @@ from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QWIDGETSIZE_MAX, QHeaderView,
     QPushButton, QFileDialog, QTextEdit, QLabel, QGroupBox, QSizePolicy, QMessageBox, QDesktopWidget,
     QTableWidget, QTableWidgetItem, QGridLayout, QSplitter, QDialogButtonBox, QStackedWidget, QDialog, QCheckBox, QLineEdit,
-    QComboBox
+    QComboBox, QTabWidget
 )
 from PyQt5.QtGui import QPixmap, QIcon, QTextOption, QCursor
 from PyQt5.QtCore import Qt, QSize, QTimer, QTranslator, QCoreApplication, QThread, pyqtSignal
@@ -67,8 +67,8 @@ from PyQt5.QtCore import Qt, QSize, QTimer, QTranslator, QCoreApplication, QThre
 # 全局变量和常量定义
 # ============================================================================
 
-b_ver = "4.1"
-b_date = "20260311"
+b_ver = "4.2"
+b_date = "20260315"
 b_auth = "wzsx150"
 is_arch_64bit = True    # 暂时没用，主要是用于不同位数系统时不同处理方式
 BASE_DIR = ""    # 基目录，可能会在临时目录
@@ -1026,6 +1026,11 @@ class APKParser:
                     match = re.search(r"name='([^']+)'", line)
                     if match:
                         info['launchable_activity'] = match.group(1)
+                
+                elif line.startswith('native-code:') or line.startswith('alt-native-code:'):
+                    matches = re.findall(r"'([^']+)'", line)
+                    if matches:
+                        info['native_code'].extend(matches)
             
             zh_priority = ['zh-CN', 'zh', 'zh-HK', 'zh-TW']
             for locale in zh_priority:
@@ -1603,6 +1608,114 @@ class APKParser:
     def get_basic_info(self):
         """获取APK基本信息"""
         return self._ensure_badging()
+    
+    def get_native_code(self):
+        """
+        获取APK支持的CPU架构列表
+        
+        返回:
+            list: 支持的ABI架构列表，如 ['arm64-v8a', 'armeabi-v7a']
+                  如果是纯Java应用则返回空列表
+        """
+        info = self._ensure_badging()
+        return info.get('native_code', [])
+    
+    def analyze_arch_support(self):
+        """
+        分析APK支持的CPU架构，生成友好的显示文本
+        
+        根据native_code列表分析支持的架构类型，按ARM、x86、MIPS、RISC-V等系列分类，
+        判断每个系列支持的位数（32位、64位、或两者都支持）。
+        对于无法识别的架构，在日志中输出warning警告。
+        
+        返回:
+            dict: 包含以下字段:
+                - is_pure_java: bool, 是否为纯Java应用（无native库）
+                - native_codes: list, 原始ABI列表
+                - arm_support: str or None, ARM系列支持情况 ('32位', '64位', '32+64位')
+                - x86_support: str or None, x86系列支持情况 ('32位', '64位', '32+64位')
+                - mips_support: str or None, MIPS系列支持情况 ('32位', '64位', '32+64位')
+                - riscv_support: str or None, RISC-V系列支持情况 ('64位')
+                - other_archs: list, 其他无法识别的架构
+                - display_text: str, 友好的显示文本
+        """
+        native_codes = self.get_native_code()
+        
+        result = {
+            'is_pure_java': len(native_codes) == 0,
+            'native_codes': native_codes,
+            'arm_support': None,
+            'x86_support': None,
+            'mips_support': None,
+            'riscv_support': None,
+            'other_archs': [],
+            'display_text': ''
+        }
+        
+        if not native_codes:
+            result['display_text'] = '纯应用'
+            return result
+        
+        known_abis = {
+            'armeabi', 'armeabi-v7a', 'arm64-v8a',
+            'x86', 'x86_64',
+            'mips', 'mips64',
+            'riscv64'
+        }
+        
+        arm_32 = any(abi in native_codes for abi in ['armeabi', 'armeabi-v7a'])
+        arm_64 = 'arm64-v8a' in native_codes
+        x86_32 = 'x86' in native_codes
+        x86_64 = 'x86_64' in native_codes
+        mips_32 = 'mips' in native_codes
+        mips_64 = 'mips64' in native_codes
+        riscv_64 = 'riscv64' in native_codes
+        
+        for abi in native_codes:
+            if abi not in known_abis:
+                result['other_archs'].append(abi)
+                app_logger.warning(f"发现未知CPU架构: {abi}")
+        
+        if arm_32 and arm_64:
+            result['arm_support'] = '32+64位'
+        elif arm_64:
+            result['arm_support'] = '64位'
+        elif arm_32:
+            result['arm_support'] = '32位'
+        
+        if x86_32 and x86_64:
+            result['x86_support'] = '32+64位'
+        elif x86_64:
+            result['x86_support'] = '64位'
+        elif x86_32:
+            result['x86_support'] = '32位'
+        
+        if mips_32 and mips_64:
+            result['mips_support'] = '32+64位'
+        elif mips_64:
+            result['mips_support'] = '64位'
+        elif mips_32:
+            result['mips_support'] = '32位'
+        
+        if riscv_64:
+            result['riscv_support'] = '64位'
+        
+        display_parts = []
+        if result['arm_support']:
+            display_parts.append(f"{result['arm_support']}ARM")
+        if result['x86_support']:
+            display_parts.append(f"{result['x86_support']}x86")
+        if result['mips_support']:
+            display_parts.append(f"{result['mips_support']}MIPS")
+        if result['riscv_support']:
+            display_parts.append(f"{result['riscv_support']}RISC-V")
+        
+        if display_parts:
+            result['display_text'] = ', '.join(display_parts)
+        elif result['other_archs']:
+            result['display_text'] = '未知'
+        
+        return result
     
     def get_permissions(self):
         """获取权限列表（从badging中获取）"""
@@ -5734,6 +5847,7 @@ class ApkWorker(QThread):
             'build_sdk_version': '',    # 暂时不使用
             'compile_sdk_version': '',    # 若 compile_sdk 不存在，则使用 build_sdk 的值
             'permissions': [],
+            'arch_support': {},    # CPU架构支持信息
         }
         self.apk_icon_info = {
             'icon_list': [],
@@ -5835,9 +5949,11 @@ class ApkWorker(QThread):
             self.apk_info['app_name'] = info.get('application_label', '')
             self.apk_info['chinese_app_name'] = info.get('application_label_zh', '') or info.get('application_label', '')
             self.apk_info['permissions'] = self.parser.get_permissions()
+            self.apk_info['arch_support'] = self.parser.analyze_arch_support()
             
             app_logger.debug(f"包名: {self.apk_info['package_name']}, 版本: {self.apk_info['version_name']}")
             app_logger.debug(f"权限数量: {len(self.apk_info['permissions'])}")
+            app_logger.debug(f"架构支持: {self.apk_info['arch_support'].get('display_text', '未知')}")
             
             self.app_info_finished.emit(self.apk_info, "", True)
         except Exception as e:
@@ -7270,7 +7386,7 @@ class ApkHelper(QMainWindow):
             "应用包名",
             "默认应用名",
             "中文应用名",
-            "版本号",
+            "版本号(架构)",
             "内部版本号",
             "最低兼容SDK版本",
             "目标适配SDK版本",
@@ -7324,6 +7440,7 @@ class ApkHelper(QMainWindow):
         将apk_info中的信息显示在基本信息表格中，包括：
         包名、应用名、中文应用名、版本号、内部版本号、SDK版本等。
         SDK版本会自动转换为对应的Android版本名称。
+        版本号行会融合显示CPU架构支持信息。
         """
         # 切换到表格视图
         self.app_info_stacked_widget.setCurrentIndex(0)  # 显示表格
@@ -7349,11 +7466,22 @@ class ApkHelper(QMainWindow):
         target_sdk_display = f"{target_sdk} ({self.sdk_version_map.get(str(target_sdk), '未知版本')})"
         compile_sdk_display = f"{compile_sdk} ({self.sdk_version_map.get(str(compile_sdk), '未知版本')})"
 
+        # 架构支持信息处理
+        arch_support = self.apk_info.get('arch_support', {})
+        arch_display_text = arch_support.get('display_text', '')
+        
+        if arch_display_text:
+            version_name_display = f"{version_name} ({arch_display_text})"
+        else:
+            version_name_display = version_name
+        
+        version_tooltip = self._build_arch_tooltip(arch_support)
+
         # 添加到表格
         self.add_table_row(self.app_info_table, "应用包名", package_name)
         self.add_table_row(self.app_info_table, "默认应用名", default_app_name)
         self.add_table_row(self.app_info_table, "中文应用名", chinese_app_name)
-        self.add_table_row(self.app_info_table, "版本号", version_name)
+        self.add_table_row(self.app_info_table, "版本号(架构)", version_name_display, version_tooltip)
         self.add_table_row(self.app_info_table, "内部版本号", version_code)
         self.add_table_row(self.app_info_table, "最低兼容SDK版本", min_sdk_display)
         self.add_table_row(self.app_info_table, "目标适配SDK版本", target_sdk_display)
@@ -7367,6 +7495,66 @@ class ApkHelper(QMainWindow):
         for i in range(self.app_info_table.rowCount()):
             total_height += self.app_info_table.rowHeight(i)
         self.app_info_table.setMaximumHeight(total_height+2)  # 设定表格最大高度
+
+    def _build_arch_tooltip(self, arch_support):
+        """
+        构建架构信息的工具提示文本。
+        
+        Args:
+            arch_support: 架构支持信息字典
+            
+        Returns:
+            str: 工具提示文本，如果无架构信息则返回None
+        """
+        if not arch_support:
+            return None
+        
+        display_text = arch_support.get('display_text', '')
+        native_codes = arch_support.get('native_codes', [])
+        
+        if not display_text:
+            return None
+        
+        if display_text == '纯应用':
+            return "该应用无原生库(Native Library)\n使用纯Java/Kotlin代码编写\n可在所有安卓设备上运行"
+        
+        if display_text == '未知':
+            other_archs = arch_support.get('other_archs', [])
+            if other_archs:
+                return f"检测到未知架构:\n{', '.join(other_archs)}\n请查看日志了解详情"
+            return "无法识别的CPU架构"
+        
+        tooltip_parts = [f"支持的CPU架构:\n{display_text}", ""]
+        
+        if native_codes:
+            tooltip_parts.append("原始ABI列表:")
+            for abi in native_codes:
+                abi_desc = self._get_abi_description(abi)
+                tooltip_parts.append(f"  - {abi}: {abi_desc}")
+        
+        return "\n".join(tooltip_parts)
+    
+    def _get_abi_description(self, abi):
+        """
+        获取ABI的描述信息。
+        
+        Args:
+            abi: ABI名称
+            
+        Returns:
+            str: ABI描述
+        """
+        abi_descriptions = {
+            'armeabi': 'ARM 32位 (旧架构)',
+            'armeabi-v7a': 'ARM 32位 (旧架构)',
+            'arm64-v8a': 'ARM 64位 (主流架构)',
+            'x86': 'x86 32位 (旧架构)',
+            'x86_64': 'x86 64位 (非主流架构)',
+            'mips': 'MIPS 32位 (旧架构)',
+            'mips64': 'MIPS 64位 (旧架构)',
+            'riscv64': 'RISC-V 64位 (非主流新兴架构)'
+        }
+        return abi_descriptions.get(abi, '未知架构')
 
     def show_parsing_status(self, message):
         """
@@ -7556,7 +7744,7 @@ class ApkHelper(QMainWindow):
         """
         self.icon_popup = None
 
-    def add_table_row(self, table, key, value):
+    def add_table_row(self, table, key, value, tooltip=None):
         """
         向指定表格添加一行数据。
         
@@ -7564,11 +7752,15 @@ class ApkHelper(QMainWindow):
             table: QTableWidget表格控件
             key: 第一列的键名
             value: 第二列的值
+            tooltip: 可选，工具提示文本
         """
         row = table.rowCount()
         table.insertRow(row)
         table.setItem(row, 0, QTableWidgetItem(key))
-        table.setItem(row, 1, QTableWidgetItem(str(value)))
+        value_item = QTableWidgetItem(str(value))
+        if tooltip:
+            value_item.setToolTip(tooltip)
+        table.setItem(row, 1, value_item)
         table.resizeRowToContents(row)
         table.horizontalHeader().setStretchLastSection(True)
 
@@ -7827,15 +8019,19 @@ class ApkHelper(QMainWindow):
         """显示关于对话框"""
         dialog = QDialog(self)
         dialog.setWindowTitle("关于")
-        dialog.setMinimumWidth(260)
+        dialog.setMinimumSize(220, 220)
+        dialog.resize(300, 410)
         
         layout = QVBoxLayout(dialog)
+        
+        tab_widget = QTabWidget()
+        tab_widget.setDocumentMode(True)
         
         about_text = f"APK文件信息解析工具-APK Helper\n\n" + \
                      f"版本: {b_ver}\n" + \
                      f"日期: {b_date}\n" + \
                      f"作者: {b_auth}\n\n" + \
-                     f"    使用aapt2工具分析安卓应用APK文件，\n显示一些基本信息。\n\n" + \
+                     f"使用aapt2工具分析安卓应用APK文件，显示一些基本信息。\n\n" + \
                      f"功能: \n" + \
                      f"- 查看应用图标和基本信息\n" + \
                      f"- 查看应用权限\n" + \
@@ -7844,10 +8040,41 @@ class ApkHelper(QMainWindow):
                      f"- 保存应用信息\n" + \
                      f"- 保存应用图标\n" + \
                      f"- 比较签名证书哈希值\n" + \
-                     f"- 支持拖拽APK文件到窗口\n"
+                     f"- 支持拖拽APK文件到窗口"
         
-        text_label = QLabel(about_text)
-        layout.addWidget(text_label)
+        about_text_edit = QTextEdit()
+        about_text_edit.setPlainText(about_text)
+        about_text_edit.setReadOnly(True)
+        about_text_edit.setStyleSheet("QTextEdit { background-color: white; color: black; font-size: 12px; }")
+        tab_widget.addTab(about_text_edit, "关于软件")
+        
+        arch_info_text = (
+            "ARM架构：主流处理器架构(高通、联发科等)\n"
+            "  - armeabi：ARM 32位 (旧架构)\n"
+            "  - armeabi-v7a：ARM 32位 (旧架构)\n"
+            "  - arm64-v8a：ARM 64位 (主流架构)\n\n"
+            "x86架构：Intel处理器架构\n"
+            "  - x86：Intel 32位处理器 (旧架构)\n"
+            "  - x86_64：Intel 64位处理器 (非主流架构)\n\n"
+            "其他架构：\n"
+            "  - mips/mips64：MIPS架构 (旧架构)\n"
+            "  - riscv64：RISC-V架构 (非主流新兴架构)\n\n"
+            "显示说明：\n"
+            "  - 纯应用：纯Java/Kotlin应用\n"
+            "  - 未知：无法识别的架构\n\n"
+            "兼容说明：\n"
+            "  - 32位应用理论上可在同架构64位系统上运行，如armeabi-v7a架构的应用可以在arm64设备上运行\n"
+            "  - 应用支持的架构与安卓设备系统架构不一致时，理论上他们无法兼容和运行\n"
+            "  - 纯应用(无架构)理论上可以兼容所有架构安卓设备，实际是否能运行还取决于其他因素影响"
+        )
+        
+        arch_text_edit = QTextEdit()
+        arch_text_edit.setPlainText(arch_info_text)
+        arch_text_edit.setReadOnly(True)
+        arch_text_edit.setStyleSheet("QTextEdit { background-color: white; color: black; font-size: 12px; }")
+        tab_widget.addTab(arch_text_edit, "架构说明")
+        
+        layout.addWidget(tab_widget)
         
         # 日志管理设置
         log_manage_group = QGroupBox("日志管理")
