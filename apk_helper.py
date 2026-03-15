@@ -6076,7 +6076,16 @@ class CustomTableWidget(QTableWidget):
     
     重写了minimumSizeHint方法，解决表格控件无法缩小到很小尺寸的问题。
     适用于需要灵活调整大小的界面布局。
+    支持 Ctrl+C 复制选中单元格内容。
+    支持自定义行间分隔符和列间隔符。
+    
+    Class Variables:
+        row_separator: 行间分隔符（默认换行符 \n）
+        col_separator: 列间隔符（默认制表符 \t）
     """
+    
+    row_separator = "\n"
+    col_separator = "\t"
     
     def minimumSizeHint(self):
         """
@@ -6086,6 +6095,52 @@ class CustomTableWidget(QTableWidget):
             QSize: 最小尺寸，设置为20x20像素
         """
         return QSize(20, 20)
+    
+    def keyPressEvent(self, event):
+        """
+        处理键盘按键事件。
+        
+        支持 Ctrl+C 复制选中单元格的内容到剪贴板。
+        复制格式为制表符分隔的多行文本，可直接粘贴到Excel等软件。
+        
+        Args:
+            event: QKeyEvent键盘事件对象
+        """
+        if event.modifiers() == Qt.ControlModifier and event.key() == Qt.Key_C:
+            selected_items = self.selectedItems()
+            if not selected_items:
+                super().keyPressEvent(event)
+                return
+            
+            rows = set()
+            cols = set()
+            item_dict = {}
+            
+            for item in selected_items:
+                row = item.row()
+                col = item.column()
+                rows.add(row)
+                cols.add(col)
+                item_dict[(row, col)] = item.text()
+            
+            sorted_rows = sorted(rows)
+            sorted_cols = sorted(cols)
+            
+            copied_lines = []
+            for row in sorted_rows:
+                row_data = []
+                for col in sorted_cols:
+                    row_data.append(item_dict.get((row, col), ""))
+                copied_lines.append(self.col_separator.join(row_data))
+            
+            if copied_lines:
+                clipboard = QApplication.clipboard()
+                clipboard.setText(self.row_separator.join(copied_lines))
+                event.accept()
+            else:
+                super().keyPressEvent(event)
+        else:
+            super().keyPressEvent(event)
 
 # 自定义文本类，继承 QTextEdit
 class CustomTextEdit(QTextEdit):
@@ -8040,7 +8095,7 @@ class ApkHelper(QMainWindow):
         dialog = QDialog(self)
         dialog.setWindowTitle("关于")
         dialog.setMinimumSize(220, 220)
-        dialog.resize(300, 410)
+        dialog.resize(320, 440)
         
         layout = QVBoxLayout(dialog)
         
@@ -8051,16 +8106,18 @@ class ApkHelper(QMainWindow):
                      f"版本: {b_ver}\n" + \
                      f"日期: {b_date}\n" + \
                      f"作者: {b_auth}\n\n" + \
-                     f"使用aapt2工具分析安卓应用APK文件，显示一些基本信息。\n\n" + \
+                     f"使用aapt2工具分析安卓应用APK文件，显示一些基本信息。支持将APK文件关联到本程序。\n\n" + \
                      f"功能: \n" + \
                      f"- 查看应用图标和基本信息\n" + \
                      f"- 查看应用权限\n" + \
-                     f"- 查看签名信息\n" + \
-                     f"- 复制应用信息\n" + \
-                     f"- 保存应用信息\n" + \
-                     f"- 保存应用图标\n" + \
-                     f"- 比较签名证书哈希值\n" + \
-                     f"- 支持拖拽APK文件到窗口"
+                     f"- 查看签名信息和证书哈希值\n" + \
+                     f"- 查看文件大小和MD5值\n" + \
+                     f"- 复制应用所有信息\n" + \
+                     f"- 保存应用所有信息到文本文件\n" + \
+                     f"- 保存应用图标到PNG文件\n" + \
+                     f"- 比较签名证书哈希值是否相同\n" + \
+                     f"- 应用信息选中单项或多项后，按Ctrl+C键可复制选中内容\n" + \
+                     f"- 支持拖拽APK文件到程序窗口进行解析"
         
         about_text_edit = QTextEdit()
         about_text_edit.setPlainText(about_text)
@@ -8092,6 +8149,136 @@ class ApkHelper(QMainWindow):
         arch_text_edit.setReadOnly(True)
         arch_text_edit.setStyleSheet("QTextEdit { background-color: white; color: black; font-size: 12px; }")
         tab_widget.addTab(arch_text_edit, "架构说明")
+        
+        copy_settings_widget = QWidget()
+        copy_settings_layout = QVBoxLayout(copy_settings_widget)
+        copy_settings_layout.setContentsMargins(10, 10, 10, 10)
+        
+        copy_settings_info = QLabel(
+            "设置表格复制时使用的分隔符，用于 Ctrl+C 复制选中单元格内容。\n"
+            "选择\"自定义\"后可输入自定义分隔符（最多10个字符，仅支持可打印ASCII字符）。\n"
+            "支持的转义字符：\\n(换行) \\t(制表) \\r(回车) \\\\(反斜杠)，其他转义字符原样输出。"
+        )
+        copy_settings_info.setWordWrap(True)
+        copy_settings_layout.addWidget(copy_settings_info)
+        
+        row_sep_group = QGroupBox("行间分隔符")
+        row_sep_layout = QVBoxLayout(row_sep_group)
+        
+        row_sep_combo = QComboBox()
+        row_sep_items = [
+            ("换行符 (\\n)", "\n"),
+            ("制表符 (\\t)", "\t"),
+            ("分号 (;)", ";"),
+            ("逗号 (,)", ","),
+            ("竖线 (|)", "|"),
+            ("空格", " "),
+            ("减号 (-)", "-"),
+            ("下划线 (_)", "_"),
+            ("斜杠 (/)", "/"),
+            ("反斜杠 (\\)", "\\"),
+            ("井号 (#)", "#"),
+            ("冒号 (:)", ":"),
+            ("大于号 (>)", ">"),
+            ("等号 (=)", "="),
+            ("自定义...", None),
+        ]
+        for item_text, item_sep in row_sep_items:
+            row_sep_combo.addItem(item_text, item_sep)
+        
+        row_sep_combo.setToolTip("选择预设分隔符或选择\"自定义\"输入自定义分隔符")
+        row_sep_layout.addWidget(row_sep_combo)
+        
+        row_sep_custom = QLineEdit()
+        row_sep_custom.setPlaceholderText("输入自定义分隔符（选择\"自定义\"后生效）")
+        row_sep_custom.setEnabled(False)
+        row_sep_custom.setToolTip("选择\"自定义\"后可在此输入自定义分隔符")
+        row_sep_layout.addWidget(row_sep_custom)
+        
+        current_row_sep = CustomTableWidget.row_separator
+        found_row_sep = False
+        for i in range(row_sep_combo.count() - 1):
+            if row_sep_combo.itemData(i) == current_row_sep:
+                row_sep_combo.setCurrentIndex(i)
+                found_row_sep = True
+                break
+        if not found_row_sep:
+            row_sep_combo.setCurrentIndex(row_sep_combo.count() - 1)
+            row_sep_custom.setEnabled(True)
+            row_sep_custom.setText(current_row_sep)
+        
+        def on_row_sep_changed(index):
+            if row_sep_combo.itemData(index) is None:
+                row_sep_custom.setEnabled(True)
+                row_sep_custom.setFocus()
+            else:
+                row_sep_custom.setEnabled(False)
+                row_sep_custom.clear()
+        
+        row_sep_combo.currentIndexChanged.connect(on_row_sep_changed)
+        
+        copy_settings_layout.addWidget(row_sep_group)
+        
+        col_sep_group = QGroupBox("列间隔符")
+        col_sep_layout = QVBoxLayout(col_sep_group)
+        
+        col_sep_combo = QComboBox()
+        col_sep_items = [
+            ("制表符 (\\t)", "\t"),
+            ("换行符 (\\n)", "\n"),
+            ("分号 (;)", ";"),
+            ("逗号 (,)", ","),
+            ("竖线 (|)", "|"),
+            ("空格", " "),
+            ("减号 (-)", "-"),
+            ("下划线 (_)", "_"),
+            ("斜杠 (/)", "/"),
+            ("反斜杠 (\\)", "\\"),
+            ("井号 (#)", "#"),
+            ("冒号 (:)", ":"),
+            ("大于号 (>)", ">"),
+            ("等号 (=)", "="),
+            ("自定义...", None),
+        ]
+        for item_text, item_sep in col_sep_items:
+            col_sep_combo.addItem(item_text, item_sep)
+        
+        col_sep_combo.setToolTip("选择预设分隔符或选择\"自定义\"输入自定义分隔符")
+        col_sep_layout.addWidget(col_sep_combo)
+        
+        col_sep_custom = QLineEdit()
+        col_sep_custom.setPlaceholderText("输入自定义分隔符（选择\"自定义\"后生效）")
+        col_sep_custom.setEnabled(False)
+        col_sep_custom.setToolTip("选择\"自定义\"后可在此输入自定义分隔符")
+        col_sep_layout.addWidget(col_sep_custom)
+        
+        current_col_sep = CustomTableWidget.col_separator
+        found_col_sep = False
+        for i in range(col_sep_combo.count() - 1):
+            if col_sep_combo.itemData(i) == current_col_sep:
+                col_sep_combo.setCurrentIndex(i)
+                found_col_sep = True
+                break
+        if not found_col_sep:
+            col_sep_combo.setCurrentIndex(col_sep_combo.count() - 1)
+            col_sep_custom.setEnabled(True)
+            col_sep_custom.setText(current_col_sep)
+        
+        def on_col_sep_changed(index):
+            if col_sep_combo.itemData(index) is None:
+                col_sep_custom.setEnabled(True)
+                col_sep_custom.setFocus()
+            else:
+                col_sep_custom.setEnabled(False)
+                col_sep_custom.clear()
+        
+        col_sep_combo.currentIndexChanged.connect(on_col_sep_changed)
+        
+        copy_settings_layout.addWidget(col_sep_group)
+        
+        copy_settings_layout.addStretch()
+        
+        tab_widget.addTab(copy_settings_widget, "复制设置")
         
         layout.addWidget(tab_widget)
         
@@ -8163,10 +8350,79 @@ class ApkHelper(QMainWindow):
         button_box.button(QDialogButtonBox.Cancel).setText("取消")
         layout.addWidget(button_box)
         
+        def parse_separator(text):
+            """
+            解析分隔符文本，处理转义字符。
+            
+            Args:
+                text: 用户输入的分隔符文本
+                
+            Returns:
+                str: 解析后的分隔符
+            """
+            if not text:
+                return ""
+            result = text.replace("\\\\", "\x00")
+            result = result.replace("\\n", "\n").replace("\\t", "\t").replace("\\r", "\r")
+            result = result.replace("\x00", "\\")
+            return result
+        
+        def validate_separator(sep, name):
+            """
+            验证分隔符是否有效。
+            
+            Args:
+                sep: 分隔符字符串
+                name: 分隔符名称（用于错误提示）
+                
+            Returns:
+                tuple: (是否有效, 错误信息)
+            """
+            if not sep:
+                return True, ""
+            
+            if len(sep) > 10:
+                return False, f"{name}长度不能超过10个字符"
+            
+            for char in sep:
+                code = ord(char)
+                if code < 32 or code > 126:
+                    return False, f"{name}仅支持可打印ASCII字符（不含控制字符）"
+            
+            return True, ""
+        
         def on_ok():
             selected_level = log_level_combo.currentText()
             set_log_level(selected_level)
             app_logger.info(f"日志级别已设置为: {selected_level}")
+            
+            row_sep = row_sep_combo.currentData()
+            if row_sep is None:
+                row_sep = parse_separator(row_sep_custom.text())
+            
+            col_sep = col_sep_combo.currentData()
+            if col_sep is None:
+                col_sep = parse_separator(col_sep_custom.text())
+            
+            if not row_sep:
+                row_sep = "\n"
+            if not col_sep:
+                col_sep = "\t"
+            
+            valid, err_msg = validate_separator(row_sep, "行间分隔符")
+            if not valid:
+                QMessageBox.warning(dialog, "警告", err_msg)
+                return
+            
+            valid, err_msg = validate_separator(col_sep, "列间隔符")
+            if not valid:
+                QMessageBox.warning(dialog, "警告", err_msg)
+                return
+            
+            CustomTableWidget.row_separator = row_sep
+            CustomTableWidget.col_separator = col_sep
+            app_logger.info(f"复制分隔符已设置: 行间分隔符={repr(row_sep)}, 列间隔符={repr(col_sep)}")
+            
             dialog.accept()
         
         button_box.accepted.connect(on_ok)
