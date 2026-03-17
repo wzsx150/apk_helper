@@ -8588,6 +8588,122 @@ class ApkHelper(QMainWindow):
         else:
             QMessageBox.critical(self, "错误", f"取消关联APK脚本文件不存在:\n{script_path}")
     
+    def check_context_menu(self):
+        """
+        检查APK文件右键菜单是否已添加。
+        
+        通过检查Windows注册表 HKCR\.apk\shell\APKHelper 键值来判断右键菜单状态。
+        该注册表路径由 ☆add_menu.bat 脚本创建，用于在APK文件右键菜单中添加
+        "使用 APK Helper 打开"选项。
+        
+        Returns:
+            bool: 已添加右键菜单返回True，否则返回False
+        
+        Note:
+            - 注册表路径: HKCR\.apk\shell\APKHelper
+            - 仅适用于Windows系统
+        """
+        try:
+            # 尝试打开注册表项，如果存在则说明右键菜单已添加
+            with winreg.OpenKey(winreg.HKEY_CLASSES_ROOT, r".apk\shell\APKHelper", 0, winreg.KEY_READ):
+                app_logger.debug("找到 HKCR\\.apk\\shell\\APKHelper 注册表项")
+                return True
+        except OSError as e:
+            # 注册表项不存在，说明右键菜单未添加
+            app_logger.debug(f"未找到 HKCR\\.apk\\shell\\APKHelper 注册表项: {e}")
+            return False
+        except ImportError:
+            # 非Windows系统，不支持注册表操作
+            app_logger.info("非Windows系统")
+            return False
+        except Exception as e:
+            # 其他异常情况
+            app_logger.warning(f"检查右键菜单状态时出错: {e}")
+            return False
+    
+    def add_context_menu(self):
+        """
+        执行添加右键菜单脚本。
+        
+        调用外部批处理脚本 ☆add_menu.bat 添加APK文件右键菜单，
+        使右键APK文件时显示"使用 APK Helper 打开"选项。
+        
+        脚本会创建以下注册表项：
+        - HKCR\.apk\shell\APKHelper (默认值: 菜单显示名称)
+        - HKCR\.apk\shell\APKHelper\Icon (图标路径)
+        - HKCR\.apk\shell\APKHelper\command (命令行)
+        
+        Note:
+            - 需要管理员权限执行，脚本会自动请求权限
+            - 32位程序在64位系统上需要通过sysnative访问system32
+        """
+        # 解决32位python程序无法调用64位system32目录下的程序
+        custom_env = os.environ.copy()
+        x64_system_path = os.path.expandvars(r"%windir%\sysnative")
+        custom_env["PATH"] = custom_env["PATH"] + f";{x64_system_path}"
+
+        global BASE_DIR
+        script_path = os.path.join(BASE_DIR, "☆add_menu.bat")
+        
+        if os.path.exists(script_path):
+            try:
+                app_logger.debug(f"执行添加右键菜单脚本: {script_path}")
+                result = subprocess.run([script_path], shell=True, capture_output=True, text=True, env=custom_env, timeout=20)
+                if result.returncode == 0:
+                    app_logger.info("添加右键菜单成功")
+                    QMessageBox.information(self, "成功", "添加右键菜单成功！")
+                else:
+                    app_logger.warning(f"添加右键菜单脚本返回非零: {result.stderr}")
+                    QMessageBox.critical(self, "错误", f"执行失败:\n{result.stderr}\n\n添加可能已经成功完成")
+            except subprocess.TimeoutExpired:
+                app_logger.error("添加右键菜单操作超时")
+                QMessageBox.critical(self, "错误", "执行操作超时！")
+            except Exception as e:
+                app_logger.error(f"添加右键菜单时发生错误: {e}")
+                QMessageBox.critical(self, "错误", f"发生错误:\n{str(e)}\n\n添加可能已经成功完成")
+        else:
+            app_logger.error(f"添加右键菜单脚本文件不存在: {script_path}")
+            QMessageBox.critical(self, "错误", f"添加右键菜单脚本文件不存在:\n{script_path}")
+    
+    def remove_context_menu(self):
+        """
+        执行清除右键菜单脚本。
+        
+        调用外部批处理脚本 ☆rm_menu.bat 清除APK文件右键菜单。
+        脚本会删除注册表项 HKCR\.apk\shell\APKHelper 及其子项。
+        
+        Note:
+            - 需要管理员权限执行，脚本会自动请求权限
+            - 32位程序在64位系统上需要通过sysnative访问system32
+        """
+        # 解决32位python程序无法调用64位system32目录下的程序
+        custom_env = os.environ.copy()
+        x64_system_path = os.path.expandvars(r"%windir%\sysnative")
+        custom_env["PATH"] = custom_env["PATH"] + f";{x64_system_path}"
+
+        global BASE_DIR
+        script_path = os.path.join(BASE_DIR, "☆rm_menu.bat")
+        
+        if os.path.exists(script_path):
+            try:
+                app_logger.debug(f"执行清除右键菜单脚本: {script_path}")
+                result = subprocess.run([script_path], shell=True, capture_output=True, text=True, env=custom_env, timeout=20)
+                if result.returncode == 0:
+                    app_logger.info("清除右键菜单成功")
+                    QMessageBox.information(self, "成功", "清除右键菜单成功！")
+                else:
+                    app_logger.warning(f"清除右键菜单脚本返回非零: {result.stderr}")
+                    QMessageBox.critical(self, "错误", f"执行失败:\n{result.stderr}\n\n清除可能已经成功完成")
+            except subprocess.TimeoutExpired:
+                app_logger.error("清除右键菜单操作超时")
+                QMessageBox.critical(self, "错误", "执行操作超时！")
+            except Exception as e:
+                app_logger.error(f"清除右键菜单时发生错误: {e}")
+                QMessageBox.critical(self, "错误", f"发生错误:\n{str(e)}\n\n清除可能已经成功完成")
+        else:
+            app_logger.error(f"清除右键菜单脚本文件不存在: {script_path}")
+            QMessageBox.critical(self, "错误", f"清除右键菜单脚本文件不存在:\n{script_path}")
+    
     def copy_custom_info(self):
         """
         按照自定义格式复制APK信息到剪贴板。
@@ -8669,71 +8785,79 @@ class ApkHelper(QMainWindow):
         settings_tab_widget = QTabWidget()
         settings_tab_widget.setTabPosition(QTabWidget.North)
         
-        # === APK关联设置选项卡 ===
+        # === 关联APK设置选项卡 ===
+        # 该选项卡包含两个功能区域：APK文件关联 和 APK右键菜单
         association_widget = QWidget()
         association_layout = QVBoxLayout(association_widget)
         association_layout.setContentsMargins(10, 10, 10, 10)
-        association_layout.setSpacing(30)
+        association_layout.setSpacing(20)  # 两个GroupBox之间的间距
         
-        association_layout.addStretch()
+        # === APK文件关联区域 ===
+        # 用于设置双击APK文件时使用本程序打开
+        apk_association_group = QGroupBox("APK文件关联")
+        apk_association_layout = QVBoxLayout(apk_association_group)
+        apk_association_layout.setSpacing(10)  # 控件之间的间距
         
-        # 关联状态显示标签
+        # 关联状态显示标签 - 显示当前APK文件关联状态
         association_status_label = QLabel()
         association_status_label.setAlignment(Qt.AlignCenter)
-        association_status_label.setStyleSheet("font-size: 14px; font-weight: bold; padding: 5px;")
+        association_status_label.setStyleSheet("font-size: 13px; font-weight: bold; padding: 5px;")
         
         def update_association_status():
-            """更新APK关联状态显示"""
+            """更新APK关联状态显示 - 检查注册表并更新标签样式"""
             is_associated = self.check_apk_association()
             if is_associated:
                 association_status_label.setText("当前状态：已关联APK文件")
-                association_status_label.setStyleSheet("font-size: 14px; font-weight: bold; padding: 5px; color: green;")
+                association_status_label.setStyleSheet("font-size: 13px; font-weight: bold; padding: 5px; color: green;")
             else:
                 association_status_label.setText("当前状态：未关联APK文件")
-                association_status_label.setStyleSheet("font-size: 14px; font-weight: bold; padding: 5px; color: red;")
+                association_status_label.setStyleSheet("font-size: 13px; font-weight: bold; padding: 5px; color: red;")
             app_logger.debug(f"APK关联状态已刷新: {'已关联' if is_associated else '未关联'}")
         
+        # 初始化时更新状态显示
         update_association_status()
-        association_layout.addWidget(association_status_label)
+        apk_association_layout.addWidget(association_status_label)
         
+        # 功能说明文字
         association_info = QLabel("设置或取消APK文件与本程序的关联。\n双击APK文件时可自动使用本程序打开。")
         association_info.setWordWrap(True)
         association_info.setAlignment(Qt.AlignCenter)
-        association_layout.addWidget(association_info)
+        apk_association_layout.addWidget(association_info)
         
-        # 关联操作按钮布局（居中）
+        # 关联操作按钮布局（水平居中排列）
         association_btn_layout = QHBoxLayout()
-        association_btn_layout.setSpacing(5)
-        association_btn_layout.addStretch()
+        association_btn_layout.setSpacing(5)  # 按钮之间的间距
+        association_btn_layout.addStretch()  # 左侧弹性空间，使按钮居中
         
+        # 关联APK文件按钮 - 调用☆reg_apk.bat脚本
         reg_btn = QPushButton("关联APK文件")
         reg_btn.setFixedWidth(100)
         reg_btn.setToolTip("注册APK文件关联，APK文件默认使用本程序打开")
         association_btn_layout.addWidget(reg_btn)
         
+        # 取消关联APK按钮 - 调用☆unreg_apk.bat脚本
         unreg_btn = QPushButton("取消关联APK")
         unreg_btn.setFixedWidth(100)
         unreg_btn.setToolTip("取消APK文件关联，APK文件不再默认使用本程序打开")
         association_btn_layout.addWidget(unreg_btn)
         
+        # 刷新状态按钮 - 重新检测关联状态
         refresh_btn = QPushButton("刷新状态")
         refresh_btn.setFixedWidth(100)
         refresh_btn.setToolTip("刷新当前关联状态")
         association_btn_layout.addWidget(refresh_btn)
         
-        association_btn_layout.addStretch()
-        association_layout.addLayout(association_btn_layout)
+        association_btn_layout.addStretch()  # 右侧弹性空间，使按钮居中
+        apk_association_layout.addLayout(association_btn_layout)
         
-        association_layout.addStretch()
-        
-        # 关联按钮点击事件
+        # 关联按钮点击事件处理
         def on_reg_apk():
-            """执行关联APK操作并刷新状态"""
+            """执行关联APK操作并刷新状态显示"""
             self.reg_apk()
             update_association_status()
         
         def on_unreg_apk():
-            """执行取消关联APK操作并刷新状态"""
+            """执行取消关联APK操作并刷新状态显示"""
             self.unreg_apk()
             update_association_status()
         
@@ -8741,7 +8865,91 @@ class ApkHelper(QMainWindow):
         unreg_btn.clicked.connect(on_unreg_apk)
         refresh_btn.clicked.connect(update_association_status)
         
-        settings_tab_widget.addTab(association_widget, "APK关联")
+        # 将APK文件关联区域添加到主布局
+        association_layout.addWidget(apk_association_group)
+        
+        # === 右键菜单区域 ===
+        # 用于在APK文件右键菜单中添加"使用 APK Helper 打开"选项
+        context_menu_group = QGroupBox("APK右键菜单")
+        context_menu_layout = QVBoxLayout(context_menu_group)
+        context_menu_layout.setSpacing(10)  # 控件之间的间距
+        
+        # 右键菜单状态显示标签 - 显示当前右键菜单是否已添加
+        context_menu_status_label = QLabel()
+        context_menu_status_label.setAlignment(Qt.AlignCenter)
+        context_menu_status_label.setStyleSheet("font-size: 13px; font-weight: bold; padding: 5px;")
+        
+        def update_context_menu_status():
+            """更新右键菜单状态显示 - 检查注册表并更新标签样式"""
+            has_menu = self.check_context_menu()
+            if has_menu:
+                context_menu_status_label.setText("当前状态：已添加右键菜单")
+                context_menu_status_label.setStyleSheet("font-size: 13px; font-weight: bold; padding: 5px; color: green;")
+            else:
+                context_menu_status_label.setText("当前状态：未添加右键菜单")
+                context_menu_status_label.setStyleSheet("font-size: 13px; font-weight: bold; padding: 5px; color: red;")
+            app_logger.debug(f"右键菜单状态已刷新: {'已添加' if has_menu else '未添加'}")
+        
+        # 初始化时更新状态显示
+        update_context_menu_status()
+        context_menu_layout.addWidget(context_menu_status_label)
+        
+        # 功能说明文字
+        context_menu_info = QLabel("添加或清除APK文件的右键菜单。\n右键APK文件时可选择\"使用 APK Helper 打开\"。")
+        context_menu_info.setWordWrap(True)
+        context_menu_info.setAlignment(Qt.AlignCenter)
+        context_menu_layout.addWidget(context_menu_info)
+        
+        # 右键菜单操作按钮布局（水平居中排列）
+        context_menu_btn_layout = QHBoxLayout()
+        context_menu_btn_layout.setSpacing(5)  # 按钮之间的间距
+        context_menu_btn_layout.addStretch()  # 左侧弹性空间，使按钮居中
+        
+        # 添加右键菜单按钮 - 调用☆add_menu.bat脚本
+        add_menu_btn = QPushButton("添加右键菜单")
+        add_menu_btn.setFixedWidth(100)
+        add_menu_btn.setToolTip("添加APK文件右键菜单，右键APK文件时显示\"使用 APK Helper 打开\"选项")
+        context_menu_btn_layout.addWidget(add_menu_btn)
+        
+        # 清除右键菜单按钮 - 调用☆rm_menu.bat脚本
+        remove_menu_btn = QPushButton("清除右键菜单")
+        remove_menu_btn.setFixedWidth(100)
+        remove_menu_btn.setToolTip("清除APK文件右键菜单")
+        context_menu_btn_layout.addWidget(remove_menu_btn)
+        
+        # 刷新状态按钮 - 重新检测右键菜单状态
+        refresh_menu_btn = QPushButton("刷新状态")
+        refresh_menu_btn.setFixedWidth(100)
+        refresh_menu_btn.setToolTip("刷新当前右键菜单状态")
+        context_menu_btn_layout.addWidget(refresh_menu_btn)
+        
+        context_menu_btn_layout.addStretch()  # 右侧弹性空间，使按钮居中
+        context_menu_layout.addLayout(context_menu_btn_layout)
+        
+        # 右键菜单按钮点击事件处理
+        def on_add_menu():
+            """执行添加右键菜单操作并刷新状态显示"""
+            self.add_context_menu()
+            update_context_menu_status()
+        
+        def on_remove_menu():
+            """执行清除右键菜单操作并刷新状态显示"""
+            self.remove_context_menu()
+            update_context_menu_status()
+        
+        # 连接按钮信号到槽函数
+        add_menu_btn.clicked.connect(on_add_menu)
+        remove_menu_btn.clicked.connect(on_remove_menu)
+        refresh_menu_btn.clicked.connect(update_context_menu_status)
+        
+        # 将右键菜单区域添加到主布局
+        association_layout.addWidget(context_menu_group)
+        
+        # 添加弹性空间，将内容推向上方
+        association_layout.addStretch()
+        
+        # 将APK关联选项卡添加到设置子选项卡
+        settings_tab_widget.addTab(association_widget, "关联APK")
         
         # === 复制自定义信息设置选项卡 ===
         copy_custom_widget = QWidget()
@@ -9310,7 +9518,7 @@ class ApkHelper(QMainWindow):
             
             progress_text = QTextEdit()
             progress_text.setReadOnly(True)
-            progress_text.setStyleSheet("font-size: 11px;")
+            progress_text.setStyleSheet("font-size: 12px;")
             progress_layout.addWidget(progress_text)
             
             btn_layout = QHBoxLayout()

@@ -1,7 +1,7 @@
 @chcp 65001 >nul
 @echo off
 
-title 取消关联APK
+title 取消APK右键菜单
 setlocal enabledelayedexpansion
 
 set "appname=APK文件信息解析工具"
@@ -12,15 +12,9 @@ set "installpath=%~dp0"
 pushd "%~dp0"
 reg query "HKU\S-1-5-19" >nul 2>nul || ( start "" mshta vbscript:createobject^("shell.application"^).shellexecute^("cmd.exe","/C pushd ""%~dp0"" && ""%~f0""","","runas",1^)^(window.close^) & exit )
 
-:clean
+:remove_menu
 echo.
-reg delete "HKCR\ApkFile.apkhelper" /f 2>nul
-reg delete "HKCR\Applications\apk_helper.exe" /f 2>nul
-reg delete "HKCU\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\FileExts\.apk\OpenWithProgids" /v "ApkFile.apkhelper" /f 2>nul
-
-:: 刷新图标，重建图标缓存
-ie4uinit.exe -ClearIconCache 2>nul
-ie4uinit.exe -Show 2>nul
+reg delete "HKCR\.apk\shell\APKHelper" /f 2>nul
 
 echo ☆☆☆☆完成
 
