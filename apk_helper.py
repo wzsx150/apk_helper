@@ -49,7 +49,7 @@ from PyQt5.QtWidgets import (
     QTableWidget, QTableWidgetItem, QGridLayout, QSplitter, QDialogButtonBox, QStackedWidget, QDialog, QCheckBox, QLineEdit,
     QComboBox, QTabWidget, QListWidget
 )
-from PyQt5.QtGui import QPixmap, QIcon, QTextOption, QCursor
+from PyQt5.QtGui import QPixmap, QIcon, QTextOption, QCursor, QFontMetrics
 from PyQt5.QtCore import Qt, QSize, QTimer, QTranslator, QCoreApplication, QThread, pyqtSignal
 
 
@@ -69,7 +69,7 @@ from PyQt5.QtCore import Qt, QSize, QTimer, QTranslator, QCoreApplication, QThre
 # ============================================================================
 
 b_ver = "5.0"
-b_date = "20260315"
+b_date = "20260317"
 b_auth = "wzsx150"
 is_arch_64bit = True    # 暂时没用，主要是用于不同位数系统时不同处理方式
 BASE_DIR = ""    # 基目录，可能会在临时目录
@@ -286,6 +286,414 @@ DENSITY_NAME_MAP = {
     640: 'xxxhdpi',     # DENSITY_XXXHIGH
     65534: 'anydpi',    # DENSITY_ANY = 0xfffe (65534)
     65535: 'nodpi',     # DENSITY_NONE = 0xffff (65535)
+}
+
+# 语言代码到中文名称的映射字典
+# 包含 ISO 639-1 语言代码和 ISO 639-1 + ISO 3166-1 地区代码
+# 参考：https://en.wikipedia.org/wiki/List_of_ISO_639-1_codes
+LOCALE_NAME_MAP = {
+    # =========================================================================
+    # 特殊语言代码
+    # =========================================================================
+    '--_--': ('默认语言', 'Default'),
+    
+    # =========================================================================
+    # ISO 639-1 语言代码（按字母顺序排列）
+    # =========================================================================
+    'aa': ('阿法尔语', 'Afar'),
+    'ab': ('阿布哈兹语', 'Abkhazian'),
+    'af': ('南非荷兰语', 'Afrikaans'),
+    'ak': ('阿坎语', 'Akan'),
+    'am': ('阿姆哈拉语', 'Amharic'),
+    'an': ('阿拉贡语', 'Aragonese'),
+    'ar': ('阿拉伯语', 'Arabic'),
+    'as': ('阿萨姆语', 'Assamese'),
+    'av': ('阿瓦尔语', 'Avaric'),
+    'ae': ('阿维斯陀语', 'Avestan'),
+    'ay': ('艾马拉语', 'Aymara'),
+    'az': ('阿塞拜疆语', 'Azerbaijani'),
+    'ba': ('巴什基尔语', 'Bashkir'),
+    'be': ('白俄罗斯语', 'Belarusian'),
+    'bg': ('保加利亚语', 'Bulgarian'),
+    'bh': ('比哈尔语', 'Bihari'),
+    'bi': ('比斯拉马语', 'Bislama'),
+    'bm': ('班巴拉语', 'Bambara'),
+    'bn': ('孟加拉语', 'Bengali'),
+    'bo': ('藏语', 'Tibetan'),
+    'br': ('布列塔尼语', 'Breton'),
+    'bs': ('波斯尼亚语', 'Bosnian'),
+    'ca': ('加泰罗尼亚语', 'Catalan'),
+    'ce': ('车臣语', 'Chechen'),
+    'ch': ('查莫罗语', 'Chamorro'),
+    'co': ('科西嘉语', 'Corsican'),
+    'cr': ('克里语', 'Cree'),
+    'cs': ('捷克语', 'Czech'),
+    'cu': ('古教会斯拉夫语', 'Old Church Slavonic'),
+    'cv': ('楚瓦什语', 'Chuvash'),
+    'cy': ('威尔士语', 'Welsh'),
+    'da': ('丹麦语', 'Danish'),
+    'de': ('德语', 'German'),
+    'dv': ('迪维希语', 'Dhivehi'),
+    'dz': ('不丹语（宗卡语）', 'Dzongkha'),
+    'ee': ('埃维语', 'Ewe'),
+    'el': ('希腊语', 'Greek'),
+    'en': ('英语', 'English'),
+    'eo': ('世界语', 'Esperanto'),
+    'es': ('西班牙语', 'Spanish'),
+    'et': ('爱沙尼亚语', 'Estonian'),
+    'eu': ('巴斯克语', 'Basque'),
+    'fa': ('波斯语', 'Persian'),
+    'ff': ('富拉语', 'Fulah'),
+    'fi': ('芬兰语', 'Finnish'),
+    'fj': ('斐济语', 'Fijian'),
+    'fo': ('法罗语', 'Faroese'),
+    'fr': ('法语', 'French'),
+    'fy': ('西弗里西亚语', 'Western Frisian'),
+    'ga': ('爱尔兰语', 'Irish'),
+    'gd': ('苏格兰盖尔语', 'Scottish Gaelic'),
+    'gl': ('加利西亚语', 'Galician'),
+    'gn': ('瓜拉尼语', 'Guarani'),
+    'gu': ('古吉拉特语', 'Gujarati'),
+    'gv': ('马恩语', 'Manx'),
+    'ha': ('豪萨语', 'Hausa'),
+    'he': ('希伯来语', 'Hebrew'),
+    'hi': ('印地语', 'Hindi'),
+    'ho': ('希里莫图语', 'Hiri Motu'),
+    'hr': ('克罗地亚语', 'Croatian'),
+    'ht': ('海地克里奥尔语', 'Haitian'),
+    'hu': ('匈牙利语', 'Hungarian'),
+    'hy': ('亚美尼亚语', 'Armenian'),
+    'hz': ('赫雷罗语', 'Herero'),
+    'ia': ('国际语', 'Interlingua'),
+    'id': ('印尼语', 'Indonesian'),
+    'ie': ('国际语E', 'Interlingue'),
+    'ig': ('伊博语', 'Igbo'),
+    'ii': ('四川彝语', 'Sichuan Yi'),
+    'ik': ('伊努皮克语', 'Inupiaq'),
+    'io': ('伊多语', 'Ido'),
+    'is': ('冰岛语', 'Icelandic'),
+    'it': ('意大利语', 'Italian'),
+    'iu': ('因纽特语', 'Inuktitut'),
+    'ja': ('日语', 'Japanese'),
+    'jv': ('爪哇语', 'Javanese'),
+    'ka': ('格鲁吉亚语', 'Georgian'),
+    'kg': ('刚果语', 'Kongo'),
+    'ki': ('基库尤语', 'Kikuyu'),
+    'kj': ('宽亚玛语', 'Kuanyama'),
+    'kk': ('哈萨克语', 'Kazakh'),
+    'kl': ('格陵兰语', 'Kalaallisut'),
+    'km': ('高棉语', 'Khmer'),
+    'kn': ('卡纳达语', 'Kannada'),
+    'ko': ('韩语', 'Korean'),
+    'kr': ('卡努里语', 'Kanuri'),
+    'ks': ('克什米尔语', 'Kashmiri'),
+    'ku': ('库尔德语', 'Kurdish'),
+    'kv': ('科米语', 'Komi'),
+    'kw': ('康沃尔语', 'Cornish'),
+    'ky': ('吉尔吉斯语', 'Kyrgyz'),
+    'la': ('拉丁语', 'Latin'),
+    'lb': ('卢森堡语', 'Luxembourgish'),
+    'lg': ('干达语', 'Ganda'),
+    'li': ('林堡语', 'Limburgan'),
+    'ln': ('林加拉语', 'Lingala'),
+    'lo': ('老挝语', 'Lao'),
+    'lt': ('立陶宛语', 'Lithuanian'),
+    'lu': ('卢巴-加丹加语', 'Luba-Katanga'),
+    'lv': ('拉脱维亚语', 'Latvian'),
+    'mg': ('马达加斯加语', 'Malagasy'),
+    'mh': ('马绍尔语', 'Marshallese'),
+    'mi': ('毛利语', 'Maori'),
+    'mk': ('马其顿语', 'Macedonian'),
+    'ml': ('马拉雅拉姆语', 'Malayalam'),
+    'mn': ('蒙古语', 'Mongolian'),
+    'mo': ('摩尔达维亚语', 'Moldovan'),  # ISO 639-1 代码（已弃用，现为 ro 的变体）
+    'mr': ('马拉地语', 'Marathi'),
+    'ms': ('马来语', 'Malay'),
+    'mt': ('马耳他语', 'Maltese'),
+    'my': ('缅甸语', 'Burmese'),
+    'na': ('瑙鲁语', 'Nauru'),
+    'nb': ('挪威博克马尔语', 'Norwegian Bokmål'),
+    'nd': ('北恩德贝莱语', 'North Ndebele'),
+    'ne': ('尼泊尔语', 'Nepali'),
+    'ng': ('恩敦加语', 'Ndonga'),
+    'nl': ('荷兰语', 'Dutch'),
+    'nn': ('挪威尼诺斯克语', 'Norwegian Nynorsk'),
+    'no': ('挪威语', 'Norwegian'),
+    'nr': ('南恩德贝莱语', 'South Ndebele'),
+    'nv': ('纳瓦霍语', 'Navajo'),
+    'ny': ('尼扬贾语', 'Chichewa'),
+    'oc': ('奥克语', 'Occitan'),
+    'oj': ('奥吉布瓦语', 'Ojibwa'),
+    'om': ('奥罗莫语', 'Oromo'),
+    'or': ('奥里亚语', 'Oriya'),
+    'os': ('奥塞梯语', 'Ossetian'),
+    'pa': ('旁遮普语', 'Punjabi'),
+    'pi': ('巴利语', 'Pali'),
+    'pl': ('波兰语', 'Polish'),
+    'ps': ('普什图语', 'Pushto'),
+    'pt': ('葡萄牙语', 'Portuguese'),
+    'qu': ('克丘亚语', 'Quechua'),
+    'rm': ('罗曼什语', 'Romansh'),
+    'rn': ('基隆迪语', 'Rundi'),
+    'ro': ('罗马尼亚语', 'Romanian'),
+    'ru': ('俄语', 'Russian'),
+    'rw': ('基尼亚卢旺达语', 'Kinyarwanda'),
+    'sa': ('梵语', 'Sanskrit'),
+    'sc': ('撒丁语', 'Sardinian'),
+    'sd': ('信德语', 'Sindhi'),
+    'se': ('北萨米语', 'Northern Sami'),
+    'sg': ('桑戈语', 'Sango'),
+    'sh': ('塞尔维亚-克罗地亚语', 'Serbo-Croatian'),  # ISO 639-1 代码（已弃用，但仍使用）
+    'si': ('僧伽罗语', 'Sinhala'),
+    'sk': ('斯洛伐克语', 'Slovak'),
+    'sl': ('斯洛文尼亚语', 'Slovenian'),
+    'sm': ('萨摩亚语', 'Samoan'),
+    'sn': ('绍纳语', 'Shona'),
+    'so': ('索马里语', 'Somali'),
+    'sq': ('阿尔巴尼亚语', 'Albanian'),
+    'sr': ('塞尔维亚语', 'Serbian'),
+    'ss': ('斯瓦蒂语', 'Swati'),
+    'st': ('南索托语', 'Southern Sotho'),
+    'su': ('巽他语', 'Sundanese'),
+    'sv': ('瑞典语', 'Swedish'),
+    'sw': ('斯瓦希里语', 'Swahili'),
+    'ta': ('泰米尔语', 'Tamil'),
+    'te': ('泰卢固语', 'Telugu'),
+    'tg': ('塔吉克语', 'Tajik'),
+    'th': ('泰语', 'Thai'),
+    'ti': ('提格里尼亚语', 'Tigrinya'),
+    'tk': ('土库曼语', 'Turkmen'),
+    'tl': ('他加禄语', 'Tagalog'),  # 他加禄语（菲律宾主要语言之一）
+    'tn': ('茨瓦纳语', 'Tswana'),
+    'to': ('汤加语', 'Tonga'),
+    'tr': ('土耳其语', 'Turkish'),
+    'ts': ('宗加语', 'Tsonga'),
+    'tt': ('鞑靼语', 'Tatar'),
+    'tw': ('特威语', 'Twi'),
+    'ty': ('塔希提语', 'Tahitian'),
+    'ug': ('维吾尔语', 'Uighur'),
+    'uk': ('乌克兰语', 'Ukrainian'),
+    'ur': ('乌尔都语', 'Urdu'),
+    'uz': ('乌兹别克语', 'Uzbek'),
+    've': ('文达语', 'Venda'),
+    'vi': ('越南语', 'Vietnamese'),
+    'vo': ('沃拉普克语', 'Volapük'),
+    'wa': ('瓦龙语', 'Walloon'),
+    'wo': ('沃洛夫语', 'Wolof'),
+    'xh': ('科萨语', 'Xhosa'),
+    'yi': ('意第绪语', 'Yiddish'),
+    'yo': ('约鲁巴语', 'Yoruba'),
+    'za': ('壮语', 'Zhuang'),
+    'zh': ('中文', 'Chinese'),
+    'zu': ('祖鲁语', 'Zulu'),
+    
+    # =========================================================================
+    # 带地区代码的语言（按语言代码分组）
+    # =========================================================================
+    # 阿拉伯语地区变体
+    'ar-AE': ('阿拉伯语（阿联酋）', 'Arabic (United Arab Emirates)'),
+    'ar-BH': ('阿拉伯语（巴林）', 'Arabic (Bahrain)'),
+    'ar-DZ': ('阿拉伯语（阿尔及利亚）', 'Arabic (Algeria)'),
+    'ar-EG': ('阿拉伯语（埃及）', 'Arabic (Egypt)'),
+    'ar-KW': ('阿拉伯语（科威特）', 'Arabic (Kuwait)'),
+    'ar-MA': ('阿拉伯语（摩洛哥）', 'Arabic (Morocco)'),
+    'ar-QA': ('阿拉伯语（卡塔尔）', 'Arabic (Qatar)'),
+    'ar-SA': ('阿拉伯语（沙特）', 'Arabic (Saudi Arabia)'),
+    'ar-SY': ('阿拉伯语（叙利亚）', 'Arabic (Syria)'),
+    'ar-TN': ('阿拉伯语（突尼斯）', 'Arabic (Tunisia)'),
+    'ar-XB': ('伪阿拉伯语（双向）', 'Arabic (Pseudo-Bidi)'),  # Android 伪语言，用于测试 RTL 布局
+    
+    # 中文地区变体
+    'zh-CN': ('简体中文（中国）', 'Simplified Chinese (China)'),
+    'zh-Hans': ('简体中文', 'Simplified Chinese'),
+    'zh-Hans-CN': ('简体中文（中国）', 'Simplified Chinese (China)'),
+    'zh-Hans-SG': ('简体中文（新加坡）', 'Simplified Chinese (Singapore)'),
+    'zh-HK': ('繁体中文（香港）', 'Traditional Chinese (Hong Kong)'),
+    'zh-MO': ('繁体中文（澳门）', 'Traditional Chinese (Macau)'),
+    'zh-SG': ('简体中文（新加坡）', 'Simplified Chinese (Singapore)'),
+    'zh-TW': ('繁体中文（台湾）', 'Traditional Chinese (Taiwan)'),
+    'zh-Hant': ('繁体中文', 'Traditional Chinese'),
+    'zh-Hant-HK': ('繁体中文（香港）', 'Traditional Chinese (Hong Kong)'),
+    'zh-Hant-TW': ('繁体中文（台湾）', 'Traditional Chinese (Taiwan)'),
+    
+    # 英语地区变体
+    'en-AU': ('英语（澳大利亚）', 'English (Australia)'),
+    'en-CA': ('英语（加拿大）', 'English (Canada)'),
+    'en-GB': ('英语（英国）', 'English (United Kingdom)'),
+    'en-IE': ('英语（爱尔兰）', 'English (Ireland)'),
+    'en-IN': ('英语（印度）', 'English (India)'),
+    'en-NZ': ('英语（新西兰）', 'English (New Zealand)'),
+    'en-PH': ('英语（菲律宾）', 'English (Philippines)'),
+    'en-SG': ('英语（新加坡）', 'English (Singapore)'),
+    'en-US': ('英语（美国）', 'English (United States)'),
+    'en-XA': ('伪英语（重音）', 'English (Pseudo-Accents)'),  # Android 伪语言，用于测试 LTR 布局
+    'en-XC': ('伪英语（构建测试）', 'English (Pseudo-Build)'),  # Android 构建系统测试用伪语言
+    'en-ZA': ('英语（南非）', 'English (South Africa)'),
+    
+    # 西班牙语地区变体
+    'es-419': ('西班牙语（拉丁美洲）', 'Spanish (Latin America)'),
+    'es-AR': ('西班牙语（阿根廷）', 'Spanish (Argentina)'),
+    'es-CL': ('西班牙语（智利）', 'Spanish (Chile)'),
+    'es-CO': ('西班牙语（哥伦比亚）', 'Spanish (Colombia)'),
+    'es-ES': ('西班牙语（西班牙）', 'Spanish (Spain)'),
+    'es-MX': ('西班牙语（墨西哥）', 'Spanish (Mexico)'),
+    'es-PE': ('西班牙语（秘鲁）', 'Spanish (Peru)'),
+    'es-US': ('西班牙语（美国）', 'Spanish (United States)'),
+    'es-VE': ('西班牙语（委内瑞拉）', 'Spanish (Venezuela)'),
+    
+    # 法语地区变体
+    'fr-BE': ('法语（比利时）', 'French (Belgium)'),
+    'fr-CA': ('法语（加拿大）', 'French (Canada)'),
+    'fr-CH': ('法语（瑞士）', 'French (Switzerland)'),
+    'fr-FR': ('法语（法国）', 'French (France)'),
+    
+    # 德语地区变体
+    'de-AT': ('德语（奥地利）', 'German (Austria)'),
+    'de-CH': ('德语（瑞士）', 'German (Switzerland)'),
+    'de-DE': ('德语（德国）', 'German (Germany)'),
+    
+    # 意大利语地区变体
+    'it-CH': ('意大利语（瑞士）', 'Italian (Switzerland)'),
+    'it-IT': ('意大利语（意大利）', 'Italian (Italy)'),
+    
+    # 葡萄牙语地区变体
+    'pt-BR': ('葡萄牙语（巴西）', 'Portuguese (Brazil)'),
+    'pt-PT': ('葡萄牙语（葡萄牙）', 'Portuguese (Portugal)'),
+    
+    # 俄语地区变体
+    'ru-RU': ('俄语（俄罗斯）', 'Russian (Russia)'),
+    
+    # 日语、韩语地区变体
+    'ja-JP': ('日语（日本）', 'Japanese (Japan)'),
+    'ko-KP': ('韩语（朝鲜）', 'Korean (North Korea)'),
+    'ko-KR': ('韩语（韩国）', 'Korean (South Korea)'),
+    
+    # 其他亚洲语言地区变体
+    'as-IN': ('阿萨姆语（印度）', 'Assamese (India)'),
+    'bn-BD': ('孟加拉语（孟加拉）', 'Bengali (Bangladesh)'),
+    'bn-IN': ('孟加拉语（印度）', 'Bengali (India)'),
+    'fa-AE': ('波斯语（阿联酋）', 'Persian (UAE)'),
+    'fa-AF': ('波斯语（阿富汗）', 'Persian (Afghanistan)'),
+    'fa-IR': ('波斯语（伊朗）', 'Persian (Iran)'),
+    'gu-IN': ('古吉拉特语（印度）', 'Gujarati (India)'),
+    'hi-IN': ('印地语（印度）', 'Hindi (India)'),
+    'id-ID': ('印尼语（印尼）', 'Indonesian (Indonesia)'),
+    'kn-IN': ('卡纳达语（印度）', 'Kannada (India)'),
+    'mai-IN': ('迈蒂利语（印度）', 'Maithili (India)'),
+    'ml-IN': ('马拉雅拉姆语（印度）', 'Malayalam (India)'),
+    'mr-IN': ('马拉地语（印度）', 'Marathi (India)'),
+    'ms-BN': ('马来语（文莱）', 'Malay (Brunei)'),
+    'ms-MY': ('马来语（马来西亚）', 'Malay (Malaysia)'),
+    'ne-IN': ('尼泊尔语（印度）', 'Nepali (India)'),
+    'ne-NP': ('尼泊尔语（尼泊尔）', 'Nepali (Nepal)'),
+    'or-IN': ('奥里亚语（印度）', 'Odia (India)'),
+    'pa-IN': ('旁遮普语（印度）', 'Punjabi (India)'),
+    'pa-PK': ('旁遮普语（巴基斯坦）', 'Punjabi (Pakistan)'),
+    'ta-IN': ('泰米尔语（印度）', 'Tamil (India)'),
+    'ta-LK': ('泰米尔语（斯里兰卡）', 'Tamil (Sri Lanka)'),
+    'ta-MY': ('泰米尔语（马来西亚）', 'Tamil (Malaysia)'),
+    'ta-SG': ('泰米尔语（新加坡）', 'Tamil (Singapore)'),
+    'te-IN': ('泰卢固语（印度）', 'Telugu (India)'),
+    'th-TH': ('泰语（泰国）', 'Thai (Thailand)'),
+    'tr-TR': ('土耳其语（土耳其）', 'Turkish (Turkey)'),
+    'ur-IN': ('乌尔都语（印度）', 'Urdu (India)'),
+    'ur-PK': ('乌尔都语（巴基斯坦）', 'Urdu (Pakistan)'),
+    'vi-VN': ('越南语（越南）', 'Vietnamese (Vietnam)'),
+    
+    # 欧洲语言地区变体
+    'af-ZA': ('南非荷兰语（南非）', 'Afrikaans (South Africa)'),
+    'am-ET': ('阿姆哈拉语（埃塞俄比亚）', 'Amharic (Ethiopia)'),
+    'az-AZ': ('阿塞拜疆语（阿塞拜疆）', 'Azerbaijani (Azerbaijan)'),
+    'be-BY': ('白俄罗斯语（白俄罗斯）', 'Belarusian (Belarus)'),
+    'bg-BG': ('保加利亚语（保加利亚）', 'Bulgarian (Bulgaria)'),
+    'bs-BA': ('波斯尼亚语（波黑）', 'Bosnian (Bosnia)'),
+    'ca-AD': ('加泰罗尼亚语（安道尔）', 'Catalan (Andorra)'),
+    'ca-ES': ('加泰罗尼亚语（西班牙）', 'Catalan (Spain)'),
+    'ca-FR': ('加泰罗尼亚语（法国）', 'Catalan (France)'),
+    'ca-IT': ('加泰罗尼亚语（意大利）', 'Catalan (Italy)'),
+    'cs-CZ': ('捷克语（捷克）', 'Czech (Czech Republic)'),
+    'cy-GB': ('威尔士语（英国）', 'Welsh (United Kingdom)'),
+    'da-DK': ('丹麦语（丹麦）', 'Danish (Denmark)'),
+    'el-GR': ('希腊语（希腊）', 'Greek (Greece)'),
+    'et-EE': ('爱沙尼亚语（爱沙尼亚）', 'Estonian (Estonia)'),
+    'eu-ES': ('巴斯克语（西班牙）', 'Basque (Spain)'),
+    'eu-FR': ('巴斯克语（法国）', 'Basque (France)'),
+    'fi-FI': ('芬兰语（芬兰）', 'Finnish (Finland)'),
+    'ga-IE': ('爱尔兰语（爱尔兰）', 'Irish (Ireland)'),
+    'gd-GB': ('苏格兰盖尔语（英国）', 'Scottish Gaelic (United Kingdom)'),
+    'gl-ES': ('加利西亚语（西班牙）', 'Galician (Spain)'),
+    'gl-PT': ('加利西亚语（葡萄牙）', 'Galician (Portugal)'),
+    'he-IL': ('希伯来语（以色列）', 'Hebrew (Israel)'),
+    'hr-HR': ('克罗地亚语（克罗地亚）', 'Croatian (Croatia)'),
+    'hu-HU': ('匈牙利语（匈牙利）', 'Hungarian (Hungary)'),
+    'hy-AM': ('亚美尼亚语（亚美尼亚）', 'Armenian (Armenia)'),
+    'is-IS': ('冰岛语（冰岛）', 'Icelandic (Iceland)'),
+    'ka-GE': ('格鲁吉亚语（格鲁吉亚）', 'Georgian (Georgia)'),
+    'kk-KZ': ('哈萨克语（哈萨克斯坦）', 'Kazakh (Kazakhstan)'),
+    'km-KH': ('高棉语（柬埔寨）', 'Khmer (Cambodia)'),
+    'ku-TR': ('库尔德语（土耳其）', 'Kurdish (Turkey)'),
+    'ky-KG': ('吉尔吉斯语（吉尔吉斯斯坦）', 'Kirghiz (Kyrgyzstan)'),
+    'ky-KZ': ('吉尔吉斯语（哈萨克斯坦）', 'Kirghiz (Kazakhstan)'),
+    'lo-LA': ('老挝语（老挝）', 'Lao (Laos)'),
+    'lt-LT': ('立陶宛语（立陶宛）', 'Lithuanian (Lithuania)'),
+    'lv-LV': ('拉脱维亚语（拉脱维亚）', 'Latvian (Latvia)'),
+    'mk-MK': ('马其顿语（马其顿）', 'Macedonian (Macedonia)'),
+    'mn-MN': ('蒙古语（蒙古）', 'Mongolian (Mongolia)'),
+    'mt-MT': ('马耳他语（马耳他）', 'Maltese (Malta)'),
+    'my-MM': ('缅甸语（缅甸）', 'Burmese (Myanmar)'),
+    'nb-NO': ('挪威博克马尔语（挪威）', 'Norwegian Bokmål (Norway)'),
+    'nl-BE': ('荷兰语（比利时）', 'Dutch (Belgium)'),
+    'nl-NL': ('荷兰语（荷兰）', 'Dutch (Netherlands)'),
+    'nn-NO': ('挪威尼诺斯克语（挪威）', 'Norwegian Nynorsk (Norway)'),
+    'no-NO': ('挪威语（挪威）', 'Norwegian (Norway)'),
+    'oc-FR': ('奥克语（法国）', 'Occitan (France)'),
+    'pl-PL': ('波兰语（波兰）', 'Polish (Poland)'),
+    'ro-RO': ('罗马尼亚语（罗马尼亚）', 'Romanian (Romania)'),
+    'si-LK': ('僧伽罗语（斯里兰卡）', 'Sinhala (Sri Lanka)'),
+    'sk-SK': ('斯洛伐克语（斯洛伐克）', 'Slovak (Slovakia)'),
+    'sl-SI': ('斯洛文尼亚语（斯洛文尼亚）', 'Slovenian (Slovenia)'),
+    'sq-AL': ('阿尔巴尼亚语（阿尔巴尼亚）', 'Albanian (Albania)'),
+    'sq-MK': ('阿尔巴尼亚语（马其顿）', 'Albanian (Macedonia)'),
+    'sr-BA': ('塞尔维亚语（波黑）', 'Serbian (Bosnia)'),
+    'sr-Latn': ('塞尔维亚语（拉丁字母）', 'Serbian (Latin)'),
+    'sr-Latn-BA': ('塞尔维亚语拉丁字母（波黑）', 'Serbian Latin (Bosnia)'),
+    'sr-Latn-ME': ('塞尔维亚语拉丁字母（黑山）', 'Serbian Latin (Montenegro)'),
+    'sr-Latn-RS': ('塞尔维亚语拉丁字母（塞尔维亚）', 'Serbian Latin (Serbia)'),
+    'sr-ME': ('塞尔维亚语（黑山）', 'Serbian (Montenegro)'),
+    'sr-RS': ('塞尔维亚语（塞尔维亚）', 'Serbian (Serbia)'),
+    'sr-SP': ('塞尔维亚语（塞尔维亚）', 'Serbian (Serbia)'),  # 旧代码（SP 非标准，应为 RS）
+    'sv-FI': ('瑞典语（芬兰）', 'Swedish (Finland)'),
+    'sv-SE': ('瑞典语（瑞典）', 'Swedish (Sweden)'),
+    'sw-KE': ('斯瓦希里语（肯尼亚）', 'Swahili (Kenya)'),
+    'sw-TZ': ('斯瓦希里语（坦桑尼亚）', 'Swahili (Tanzania)'),
+    'tg-TJ': ('塔吉克语（塔吉克斯坦）', 'Tajik (Tajikistan)'),
+    'tk-TM': ('土库曼语（土库曼斯坦）', 'Turkmen (Turkmenistan)'),
+    'tl-PH': ('菲律宾语（菲律宾）', 'Filipino (Philippines)'),
+    'uk-UA': ('乌克兰语（乌克兰）', 'Ukrainian (Ukraine)'),
+    'uz-UZ': ('乌兹别克语（乌兹别克斯坦）', 'Uzbek (Uzbekistan)'),
+    
+    # 其他地区变体
+    'bo-CN': ('藏语（中国）', 'Tibetan (China)'),
+    'br-FR': ('布列塔尼语（法国）', 'Breton (France)'),
+    'ia-CN': ('国际语（中国）', 'Interlingua (China)'),  # 非标准组合
+    'ug-CN': ('维吾尔语（中国）', 'Uighur (China)'),
+    
+    # =========================================================================
+    # Android 特殊语言代码和别名
+    # =========================================================================
+    'fil': ('菲律宾语', 'Filipino'),  # 菲律宾语的另一种代码（pilipino）
+    'gr': ('希腊语', 'Greek'),  # Android 旧代码/错误代码（ISO 639-1 正式代码为 el）
+    'in': ('印尼语', 'Indonesian'),  # Android 旧代码（ISO 639-1 正式代码为 id）
+    'in-ID': ('印尼语（印尼）', 'Indonesian (Indonesia)'),  # Android 旧代码
+    'iw': ('希伯来语', 'Hebrew'),  # Android 旧代码（ISO 639-1 正式代码为 he）
+    'iw-IL': ('希伯来语（以色列）', 'Hebrew (Israel)'),  # 旧代码
+    'ji': ('意第绪语', 'Yiddish'),  # Android 旧代码（ISO 639-1 正式代码为 yi）
+    'jp': ('日语', 'Japanese'),  # Android 旧代码/错误代码（ISO 639-1 正式代码为 ja）
+    'jv-Latn': ('爪哇语（拉丁字母）', 'Javanese (Latin)'),  # 非标准组合
+    'jw': ('爪哇语', 'Javanese'),  # Android 旧代码（ISO 639-1 正式代码为 jv）
+    'kmr': ('北库尔德语', 'Northern Kurdish'),  # ISO 639-3 代码（库尔德语方言）
+    'bqi-IR': ('北库尔德语（伊朗）', 'Northern Kurdish (Iran)'),  # ISO 639-3 代码
+    'mai': ('迈蒂利语', 'Maithili'),  # ISO 639-3 代码（印度语言）
 }
 
 # Android 系统颜色资源 ID 查找颜色值的方法
@@ -1341,6 +1749,13 @@ class APKParser:
                     match = re.search(r"name='([^']+)'", line)
                     if match:
                         info['launchable_activity'] = match.group(1)
+                
+                elif line.startswith('locales:'):
+                    # 解析语言列表，格式: locales: 'en-US' 'zh-CN' 'ja' ...
+                    matches = re.findall(r"'([^']+)'", line)
+                    if matches:
+                        info['locales'] = matches
+                        app_logger.debug(f"从badging获取到 {len(matches)} 个语言: {matches}")
                 
                 elif line.startswith('native-code:') or line.startswith('alt-native-code:'):
                     matches = re.findall(r"'([^']+)'", line)
@@ -6411,10 +6826,12 @@ class ApkWorker(QThread):
             self.apk_info['chinese_app_name'] = info.get('application_label_zh', '') or info.get('application_label', '')
             self.apk_info['permissions'] = self.parser.get_permissions()
             self.apk_info['arch_support'] = self.parser.analyze_arch_support()
+            self.apk_info['locales'] = info.get('locales', [])  # 获取支持的语言列表
             
             app_logger.debug(f"包名: {self.apk_info['package_name']}, 版本: {self.apk_info['version_name']}")
             app_logger.debug(f"权限数量: {len(self.apk_info['permissions'])}")
             app_logger.debug(f"架构支持: {self.apk_info['arch_support'].get('display_text', '未知')}")
+            app_logger.debug(f"支持语言: {len(self.apk_info['locales'])} 种")
             
             self.app_info_finished.emit(self.apk_info, "", True)
         except Exception as e:
@@ -6913,7 +7330,7 @@ class ApkHelper(QMainWindow):
         # 定义程序版本信息
         self.version = b_ver
         self.setWindowTitle(f"APK文件信息解析工具-APK Helper {self.version}")
-        self.setGeometry(100, 100, 400, 524)  # 整个主窗口尺寸(左距离, 上距离, 宽度, 高度)，
+        self.setGeometry(100, 100, 400, 560)  # 整个主窗口尺寸(左距离, 上距离, 宽度, 高度)，
         
         # 让窗口显示在屏幕中心
         self.center_window()
@@ -7608,6 +8025,7 @@ class ApkHelper(QMainWindow):
             'build_sdk_version': '',    # 暂时不使用
             'compile_sdk_version': '',    # 若 compile_sdk 不存在，则使用 build_sdk 的值
             'permissions': [],
+            'locales': [],    # 支持的语言列表
         }
         self.apk_icon_info = {
             'icon_list': [],
@@ -7922,6 +8340,7 @@ class ApkHelper(QMainWindow):
             "最低兼容SDK版本",
             "目标适配SDK版本",
             "编译构建SDK版本",
+            "支持语言",
         ]
         
         # 应用基本信息：显示属性名，值为空
@@ -7941,9 +8360,9 @@ class ApkHelper(QMainWindow):
         
         # 根据应用基本信息表格的高度，更新调整整个主窗口中几个显示区域的比例，目的就是为了让应用信息刚好显示完整（不会显示竖向滚动条）
         height = self.main_splitter.height()  # 主窗口的高度
-        app_info_sh = int(1000 * (total_height+36) / height)  # 多增加36个像素作为区域框额外的高度。这样换算出来实际像素对应的高度比例值
+        app_info_sh = int(1000 * (total_height+12) / height)  # 多增加一定数量的像素作为区域框额外的高度。这样换算出来实际像素对应的高度比例值
         # app_logger.debug(f"main_splitter高度={height}像素, app_info_table高度比例值={app_info_sh}")
-        self.main_splitter.setSizes([160, app_info_sh, 700-app_info_sh, 140])  # 160 给图标区域，动态调整应用信息、签名信息区域，最后文件信息固定。最终按比例分摊各区域。
+        self.main_splitter.setSizes([164, app_info_sh, 700-app_info_sh, 136])  # 图标区域固定，动态调整应用信息、签名信息区域，最后文件信息固定。最终按比例分摊各区域。
 
     def center_window(self):
         """
@@ -8015,6 +8434,9 @@ class ApkHelper(QMainWindow):
         self.add_table_row(self.app_info_table, "目标适配SDK版本", target_sdk_display)
         self.add_table_row(self.app_info_table, "编译构建SDK版本", compile_sdk_display)
         
+        # 添加支持语言行（带查看按钮）
+        self._add_locale_row()
+        
         # 根据内容自动调整第一列列宽
         self.app_info_table.resizeColumnToContents(0)
         
@@ -8023,6 +8445,66 @@ class ApkHelper(QMainWindow):
         for i in range(self.app_info_table.rowCount()):
             total_height += self.app_info_table.rowHeight(i)
         self.app_info_table.setMaximumHeight(total_height+2)  # 设定表格最大高度
+
+    def _add_locale_row(self):
+        """
+        添加支持语言行到基本信息表格。
+        
+        该行显示语言数量和一个"查看"按钮，点击按钮弹出语言列表详情窗口。
+        """
+        # 获取语言列表
+        locales = self.apk_info.get('locales', [])
+        locale_count = len(locales)
+        
+        # 创建行
+        row = self.app_info_table.rowCount()
+        self.app_info_table.insertRow(row)
+        
+        # 第一列：属性名
+        self.app_info_table.setItem(row, 0, QTableWidgetItem("支持语言"))
+        
+        # 第二列：设置文本内容（用于复制功能）
+        if locale_count > 0:
+            locale_text = f"{locale_count} 种语言"
+        else:
+            locale_text = "未知"
+        self.app_info_table.setItem(row, 1, QTableWidgetItem(locale_text))
+        
+        # 如果有语言，添加查看按钮（紧挨文本右侧）
+        if locale_count > 0:
+            # 计算文本宽度
+            font = self.app_info_table.font()
+            fm = QFontMetrics(font)
+            text_width = fm.horizontalAdvance(locale_text)
+            
+            # 创建只包含按钮的透明控件
+            btn_widget = QWidget()
+            btn_layout = QHBoxLayout(btn_widget)
+            btn_layout.setContentsMargins(text_width + 10, 0, 0, 0)  # 左边距 = 文本宽度 + 间距
+            btn_layout.setSpacing(0)
+            
+            # 查看按钮
+            view_btn = QPushButton("查看")
+            view_btn.setFixedSize(40, 20)
+            view_btn.setToolTip("点击查看详细语言列表")
+            view_btn.clicked.connect(lambda: self._show_locale_dialog(locales))
+            btn_layout.addWidget(view_btn)
+            
+            btn_layout.addStretch()
+            
+            self.app_info_table.setCellWidget(row, 1, btn_widget)
+        
+        self.app_info_table.resizeRowToContents(row)
+    
+    def _show_locale_dialog(self, locales):
+        """
+        显示语言列表详情对话框。
+        
+        Args:
+            locales: 语言代码列表
+        """
+        dialog = LocaleListDialog(locales, self)
+        dialog.exec_()
 
     def _build_arch_tooltip(self, arch_support):
         """
@@ -9945,6 +10427,241 @@ class ApkHelper(QMainWindow):
                 self.worker_thread.wait()
                 self.worker_thread = None
             self.worker = None
+
+
+class LocaleListDialog(QDialog):
+    """
+    语言列表详情对话框。
+    
+    显示APK支持的所有语言列表，包含语言代码、语言名称和中文名称。
+    支持实时搜索过滤、Ctrl+C快捷键复制和复制选中内容。
+    
+    Attributes:
+        locales: 语言代码列表
+        search_input: 搜索输入框
+        table: 语言列表表格
+    """
+    
+    def __init__(self, locales, parent=None):
+        """
+        初始化语言列表对话框。
+        
+        Args:
+            locales: 语言代码列表，如 ['en-US', 'zh-CN', 'ja']
+            parent: 父窗口
+        """
+        super().__init__(parent)
+        self.setWindowTitle("支持的语言列表")
+        self.setModal(True)
+        self.resize(400, 360)
+        
+        self.locales = locales or []
+        
+        layout = QVBoxLayout()
+        layout.setSpacing(10)
+        
+        # 顶部说明和搜索框
+        top_layout = QHBoxLayout()
+        count_label = QLabel(f"共 {len(self.locales)} 种语言")
+        count_label.setStyleSheet("font-weight: bold;")
+        top_layout.addWidget(count_label)
+        
+        top_layout.addStretch()
+        
+        search_label = QLabel("搜索:")
+        top_layout.addWidget(search_label)
+        
+        self.search_input = QLineEdit()
+        self.search_input.setPlaceholderText("输入语言代码或名称...")
+        self.search_input.setFixedWidth(160)
+        self.search_input.textChanged.connect(self.filter_table)
+        top_layout.addWidget(self.search_input)
+        
+        layout.addLayout(top_layout)
+        
+        # 语言列表表格
+        self.table = QTableWidget()
+        self.table.setColumnCount(3)
+        self.table.setHorizontalHeaderLabels(["语言代码", "语言名称", "中文名称"])
+        # 允许用户拖拽调整列宽
+        self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Interactive)
+        self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)
+        # 设置默认列宽
+        self.table.setColumnWidth(0, 100)
+        self.table.setColumnWidth(1, 140)
+        self.table.setColumnWidth(2, 140)
+        self.table.horizontalHeader().setHighlightSections(False)  # 禁用表头在选中时高亮
+        self.table.verticalHeader().setVisible(False)
+        self.table.verticalHeader().setDefaultSectionSize(24)  # 设置默认行高
+        self.table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.table.setSelectionBehavior(QTableWidget.SelectRows)
+        self.table.setSelectionMode(QTableWidget.ExtendedSelection)
+        self.table.setAlternatingRowColors(True)
+        self.table.setShowGrid(True)  # 显示网格线
+        # 启用表头点击排序
+        self.table.setSortingEnabled(True)
+        # 添加表格样式（包括选中状态和排序指示器）
+        self.table.setStyleSheet("""
+            QTableWidget {
+                gridline-color: #c0c0c0;
+                border: 1px solid #a0a0a0;
+                selection-background-color: #0078d7;
+                selection-color: white;
+            }
+            QTableWidget::item:selected {
+                background-color: #0078d7;
+                color: white;
+            }
+            QHeaderView::section {
+                background-color: #f0f0f0;
+                border-bottom: 1px solid #a0a0a0;
+                border-right: 1px solid #a0a0a0;
+                font-weight: normal;
+            }
+            QHeaderView::section:hover {
+                background-color: #e0e0e0;
+            }
+        """)
+        
+        # 填充表格数据
+        self.populate_table()
+        
+        layout.addWidget(self.table)
+        
+        # 提示文字（放在按钮上方，居中）
+        tip_label = QLabel("提示: 支持某种语言并不代表应用可以正常使用该语言")
+        tip_label.setStyleSheet("color: blue; font-size: 12px;")
+        tip_label.setAlignment(Qt.AlignCenter)
+        layout.addWidget(tip_label)
+        
+        # 底部按钮（居中）
+        bottom_layout = QHBoxLayout()
+        bottom_layout.addStretch()
+        
+        copy_btn = QPushButton("复制选中")
+        copy_btn.setFixedWidth(80)
+        copy_btn.setToolTip("复制选中行的语言信息到剪贴板")
+        copy_btn.clicked.connect(self.copy_selected)
+        bottom_layout.addWidget(copy_btn)
+        
+        close_btn = QPushButton("关闭")
+        close_btn.setFixedWidth(80)
+        close_btn.clicked.connect(self.close)
+        bottom_layout.addWidget(close_btn)
+        
+        bottom_layout.addStretch()
+        
+        layout.addLayout(bottom_layout)
+        
+        self.setLayout(layout)
+        
+        # 默认聚焦到搜索框
+        self.search_input.setFocus()
+    
+    def keyPressEvent(self, event):
+        """
+        键盘事件处理，支持 Ctrl+C 复制选中内容。
+        
+        Args:
+            event: QKeyEvent 键盘事件对象
+        """
+        if event.modifiers() == Qt.ControlModifier and event.key() == Qt.Key_C:
+            self.copy_selected()
+        else:
+            super().keyPressEvent(event)
+    
+    def populate_table(self, filter_text=""):
+        """
+        填充语言列表表格。
+        
+        Args:
+            filter_text: 过滤文本，为空则显示全部
+        """
+        # 填充数据前先禁用排序，避免排序状态与数据不同步导致单元格消失
+        self.table.setSortingEnabled(False)
+        self.table.setRowCount(0)
+        filter_lower = filter_text.lower()
+        
+        for locale in self.locales:
+            # 获取语言名称，未知语言显示"未知"
+            if locale in LOCALE_NAME_MAP:
+                locale_info = LOCALE_NAME_MAP[locale]
+                zh_name = locale_info[0]
+                en_name = locale_info[1]
+            else:
+                # 未知语言代码，显示代码本身
+                zh_name = f"未知语言"
+                en_name = f"Unknown ({locale})"
+            
+            # 过滤判断
+            if filter_text:
+                if (filter_lower not in locale.lower() and 
+                    filter_lower not in zh_name.lower() and 
+                    filter_lower not in en_name.lower()):
+                    continue
+            
+            # 添加行
+            row = self.table.rowCount()
+            self.table.insertRow(row)
+            self.table.setItem(row, 0, QTableWidgetItem(locale))
+            self.table.setItem(row, 1, QTableWidgetItem(en_name))
+            self.table.setItem(row, 2, QTableWidgetItem(zh_name))
+        
+        # 填充完成后重新启用排序
+        self.table.setSortingEnabled(True)
+    
+    def filter_table(self, text):
+        """
+        根据搜索文本过滤表格内容。
+        
+        Args:
+            text: 搜索文本
+        """
+        self.populate_table(text)
+    
+    def copy_selected(self):
+        """
+        复制选中行的语言信息到剪贴板。
+        
+        使用设置的分隔符（CustomTableWidget.row_separator 和 col_separator）。
+        格式: 语言代码{col_separator}语言名称{col_separator}中文名称
+        """
+        selected_rows = self.table.selectedItems()
+        if not selected_rows:
+            return
+        
+        # 获取选中的行号（去重）
+        rows = set()
+        for item in selected_rows:
+            rows.add(item.row())
+        
+        # 获取设置的分隔符
+        col_sep = CustomTableWidget.col_separator
+        row_sep = CustomTableWidget.row_separator
+        
+        # 构建复制内容
+        lines = []
+        for row in sorted(rows):
+            # 获取各列数据，添加空值检查防止异常
+            locale_item = self.table.item(row, 0)
+            en_name_item = self.table.item(row, 1)
+            zh_name_item = self.table.item(row, 2)
+            
+            # 如果任何单元格为空，跳过该行
+            if not locale_item or not en_name_item or not zh_name_item:
+                app_logger.warning(f"语言列表复制时发现空单元格，跳过行 {row}")
+                continue
+            
+            locale = locale_item.text()
+            en_name = en_name_item.text()
+            zh_name = zh_name_item.text()
+            lines.append(col_sep.join([locale, en_name, zh_name]))
+        
+        if lines:
+            clipboard = QApplication.clipboard()
+            clipboard.setText(row_sep.join(lines))
+            app_logger.debug(f"已复制 {len(lines)} 条语言信息到剪贴板")
 
 
 # 签名详情小窗口
