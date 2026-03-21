@@ -273,6 +273,42 @@ def get_long_path(short_path):
     return short_path
 
 
+def refresh_file_association_icon():
+    """
+    刷新Windows文件关联图标。
+    
+    在修改文件关联注册表后调用此函数，可以立即刷新资源管理器中
+    相关文件的图标显示，使图标变化立即生效。
+    
+    实现原理：
+    调用 SHChangeNotify API 通知系统文件关联已更改，
+    系统会自动刷新图标显示，无需重启资源管理器。
+    
+    Returns:
+        bool: 刷新成功返回True，失败返回False
+    
+    Note:
+        此函数仅适用于Windows系统，在其他系统上会直接返回False
+    """
+    try:
+        shell32 = ctypes.windll.shell32
+        
+        SHCNE_ASSOCCHANGED = 0x08000000
+        SHCNF_IDLIST = 0x0000
+        SHCNF_FLUSH = 0x1000
+        
+        shell32.SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST | SHCNF_FLUSH, None, None)
+        
+        app_logger.debug("已发送文件关联刷新通知 (SHChangeNotify)")
+        return True
+    except AttributeError:
+        app_logger.warning("当前系统不支持 SHChangeNotify API")
+        return False
+    except Exception as e:
+        app_logger.warning(f"刷新文件关联图标失败: {e}")
+        return False
+
+
 RES_XML_TYPE = 0x0003
 RES_STRING_POOL_TYPE = 0x0001
 RES_XML_RESOURCE_MAP_TYPE = 0x0180
@@ -9252,6 +9288,8 @@ class ApkHelper(QMainWindow):
         self._close_executing_dialog()
         
         if success:
+            # 刷新文件关联图标，使APK文件图标立即更新
+            refresh_file_association_icon()
             QMessageBox.information(self, "成功", message)
         else:
             QMessageBox.warning(self, "提示", message)
@@ -9287,6 +9325,8 @@ class ApkHelper(QMainWindow):
         self._close_executing_dialog()
         
         if success:
+            # 刷新文件关联图标，使APK文件图标立即更新
+            refresh_file_association_icon()
             QMessageBox.information(self, "成功", message)
         else:
             QMessageBox.warning(self, "提示", message)

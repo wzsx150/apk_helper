@@ -61,7 +61,7 @@ echo OoooK
 :: 让32位程序能正常调用64位系统命令
 set "PATH=%PATH%;%windir%\sysnative"
 
-:: 刷新图标，重建图标缓存
+:: 刷新图标，重建图标缓存，Win11可能无效
 ie4uinit.exe -ClearIconCache
 ie4uinit.exe -Show
 
