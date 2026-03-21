@@ -44,10 +44,10 @@ from io import BytesIO
 from PIL import Image, ImageDraw
 
 from PyQt5.QtWidgets import (
-    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QWIDGETSIZE_MAX, QHeaderView,
-    QPushButton, QFileDialog, QTextEdit, QLabel, QGroupBox, QSizePolicy, QMessageBox, QDesktopWidget,
-    QTableWidget, QTableWidgetItem, QGridLayout, QSplitter, QDialogButtonBox, QStackedWidget, QDialog, QCheckBox, QLineEdit,
-    QComboBox, QTabWidget, QListWidget
+    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QHeaderView, QDesktopWidget,
+    QPushButton, QFileDialog, QTextEdit, QLabel, QGroupBox, QSizePolicy, QMessageBox, QLineEdit,
+    QTableWidget, QTableWidgetItem, QGridLayout, QSplitter, QStackedWidget, QDialog, QCheckBox,
+    QComboBox, QTabWidget
 )
 from PyQt5.QtGui import QPixmap, QIcon, QTextOption, QCursor, QFontMetrics
 from PyQt5.QtCore import Qt, QSize, QTimer, QTranslator, QCoreApplication, QThread, pyqtSignal
@@ -69,7 +69,7 @@ from PyQt5.QtCore import Qt, QSize, QTimer, QTranslator, QCoreApplication, QThre
 # ============================================================================
 
 b_ver = "5.0"
-b_date = "20260317"
+b_date = "20260321"
 b_auth = "wzsx150"
 is_arch_64bit = True    # 暂时没用，主要是用于不同位数系统时不同处理方式
 BASE_DIR = ""    # 基目录，可能会在临时目录
@@ -248,6 +248,29 @@ def set_log_level(level_name):
     CURRENT_LOG_LEVEL = level_name
     level = level_map.get(level_name, logging.INFO)
     app_logger.setLevel(level)
+
+
+def get_long_path(short_path):
+    """
+    将短路径格式转换为长路径格式。
+    
+    Args:
+        short_path: 短路径格式的文件或目录路径
+        
+    Returns:
+        str: 长路径格式的路径，如果转换失败则返回原路径
+    """
+    if not short_path:
+        return short_path
+    try:
+        buffer_size = ctypes.windll.kernel32.GetLongPathNameW(short_path, None, 0)
+        if buffer_size > 0:
+            buffer = ctypes.create_unicode_buffer(buffer_size)
+            ctypes.windll.kernel32.GetLongPathNameW(short_path, buffer, buffer_size)
+            return buffer.value
+    except Exception as e:
+        app_logger.debug(f"转换长路径失败: {e}")
+    return short_path
 
 
 RES_XML_TYPE = 0x0003
@@ -6660,6 +6683,163 @@ class BatchRenameWorker(QThread):
 
 
 # ============================================================================
+# 提权脚本执行工作线程类
+# ============================================================================
+
+class ElevatedScriptWorker(QThread):
+    """
+    提权脚本执行工作线程。
+    
+    在后台线程中执行需要管理员权限的脚本，避免阻塞主界面。
+    使用MinSudo提权，通过^转义重定向输出到临时文件。
+    
+    Signals:
+        finished: 执行完成信号 (success, message, output_content)
+    
+    Attributes:
+        script_name: 脚本文件名
+        operation_name: 操作名称（用于日志和提示）
+        timeout: 超时时间（秒）
+    """
+    finished = pyqtSignal(bool, str, str)
+    
+    def __init__(self, script_name, operation_name, timeout=30):
+        """
+        初始化提权脚本执行工作线程。
+        
+        Args:
+            script_name: 脚本文件名（如 "☆reg_apk.bat"）
+            operation_name: 操作名称（如 "关联APK"）
+            timeout: 超时时间（秒），默认30秒
+        """
+        super().__init__()
+        self.script_name = script_name
+        self.operation_name = operation_name
+        self.timeout = timeout
+        self.output_file = None
+    
+    def run(self):
+        """
+        执行提权脚本。
+        
+        使用MinSudo提权执行脚本，通过^转义重定向输出到临时文件。
+        执行完成后读取临时文件内容并通过finished信号返回结果。
+        """
+        # 获取脚本路径和MinSudo路径
+        script_path = get_long_path(os.path.join(BASE_DIR, self.script_name))
+        sudo_path = get_long_path(os.path.join(BASE_DIR, "MinSudo.exe"))
+        
+        # 检查文件是否存在
+        if not os.path.exists(sudo_path):
+            app_logger.error(f"缺少sudo组件文件: {sudo_path}")
+            self.finished.emit(False, f"缺少sudo组件文件:\n{sudo_path}\n\n请确保程序文件完整。", "")
+            return
+        
+        if not os.path.exists(script_path):
+            app_logger.error(f"脚本文件不存在: {script_path}")
+            self.finished.emit(False, f"脚本文件不存在:\n{script_path}\n\n请确保程序文件完整。", "")
+            return
+        
+        import tempfile
+        # 使用tempfile创建临时文件（自动生成唯一文件名）
+        fd, self.output_file = tempfile.mkstemp(suffix=".txt", prefix="apk_helper_")
+        os.close(fd)  # 关闭文件描述符，只保留路径
+        
+        # 构建命令：MinSudo --NoLogo "script.bat"  2^>^&1 ^> "output.txt"
+        # 使用 ^ 转义，使重定向符仅用于bat脚本内部
+        cmd_str = f'"{sudo_path}" --NoLogo "{script_path}" 2^>^&1 ^> "{self.output_file}"'
+        app_logger.debug(f"执行命令: {cmd_str}")
+        
+        try:
+            # 解决32位python程序无法调用64位system32目录下的程序，实际可能无法传递给提权后进程
+            custom_env = os.environ.copy()
+            x64_system_path = os.path.expandvars(r"%windir%\sysnative")
+            custom_env["PATH"] = custom_env["PATH"] + f";{x64_system_path}"
+            
+            # 执行命令
+            result = subprocess.run(
+                cmd_str, 
+                shell=True, 
+                text=True, 
+                capture_output=True, 
+                timeout=self.timeout,
+                env=custom_env
+            )
+            
+            app_logger.debug(f"{self.script_name} 执行结果: returncode={result.returncode}")
+            
+            # 等待文件写入完成
+            time.sleep(0.6)
+            
+            # 读取输出文件
+            output_content = ""
+            if os.path.exists(self.output_file):
+                try:
+                    # 注意：bat脚本采用gbk编码，所以这里一定要使用gbk编码
+                    # 使用newline=''禁用Python自动换行符转换，然后手动处理\r
+                    with open(self.output_file, 'r', encoding='gbk', errors='replace', newline='') as f:
+                        output_content = f.read()
+                    # 移除Windows多余的\r字符
+                    output_content = output_content.replace("\r\r\n", "\n").replace("\r", "")
+                    output_content_lite = output_content[:500] + "..." if len(output_content) > 500 else output_content
+                    app_logger.debug(f"输出文件内容: \n{output_content_lite}")
+                except Exception as e:
+                    app_logger.warning(f"读取输出文件失败: {e}")
+            
+            # 判断执行结果：需要满足三个条件
+            # 1. 返回值为0
+            # 2. 输出文件存在
+            # 3. 输出内容不为空
+            file_exists = os.path.exists(self.output_file)
+            content_not_empty = len(output_content.strip()) > 0
+            
+            if result.returncode == 0 and file_exists and content_not_empty:
+                if "OoooK" in output_content:
+                    app_logger.info(f"{self.operation_name}成功")
+                    self.finished.emit(True, f"{self.operation_name}成功！", output_content)
+                else:
+                    app_logger.info(f"{self.operation_name}完成")
+                    self.finished.emit(True, f"{self.operation_name}完成！", output_content)
+            else:
+                # 执行失败，构建详细的错误信息
+                error_parts = []
+                if result.returncode != 0:
+                    # 注意：由于subprocess.run使用了text=True，stderr已经是字符串，不需要decode
+                    stderr_msg = result.stderr if result.stderr else ""
+                    # 移除Windows多余的\r字符
+                    stderr_msg = stderr_msg.replace("\r\r\n", "\n").replace("\r", "")
+                    error_parts.append(f"返回码: {result.returncode}")
+                    if stderr_msg:
+                        error_parts.append(f"错误输出: {stderr_msg}")
+                if not file_exists:
+                    error_parts.append("临时输出文件未创建，程序组件可能未正常运行")
+                if not content_not_empty:
+                    error_parts.append("临时输出内容为空，程序组件可能未正常运行")
+                
+                error_msg = "\n".join(error_parts) if error_parts else "未知错误"
+                app_logger.warning(f"{self.operation_name}执行失败: {error_msg}")
+                self.finished.emit(False, f"执行失败:\n{error_msg}\n\n请确认已赋予管理员权限并杀毒软件放行", output_content)
+                
+        except subprocess.TimeoutExpired:
+            app_logger.error(f"{self.operation_name}操作超时")
+            self.finished.emit(False, f"执行操作超时！\n请检查是否有管理员权限确认窗口等待确认或杀毒软件拦截", "")
+        except Exception as e:
+            app_logger.error(f"{self.operation_name}时发生错误: {e}")
+            self.finished.emit(False, f"发生错误:\n{str(e)}\n\n{self.operation_name}可能已经成功完成", "")
+        finally:
+            self._cleanup_temp_file()
+    
+    def _cleanup_temp_file(self):
+        """清理临时文件"""
+        if self.output_file and os.path.exists(self.output_file):
+            try:
+                os.remove(self.output_file)
+                app_logger.debug(f"已清理临时文件: {self.output_file}")
+            except Exception as e:
+                app_logger.warning(f"清理临时文件失败: {e}")
+
+
+# ============================================================================
 # APK后台解析工作线程类
 # ============================================================================
 
@@ -8161,7 +8341,7 @@ class ApkHelper(QMainWindow):
         
         
         # 添加拖拽提示文本
-        drag_hint = QLabel("提示：拖拽APK文件到窗口即可查看信息")
+        drag_hint = QLabel("提示: 拖拽APK文件到窗口即可查看信息")
         drag_hint.setAlignment(Qt.AlignCenter)
         drag_hint.setStyleSheet("color: blue;")
         button_layout.addWidget(drag_hint, 3, 0, 1, 2)  # 横跨两列
@@ -8967,45 +9147,77 @@ class ApkHelper(QMainWindow):
             app_logger.warning("没有可保存的图标")
 
     def check_apk_association(self):
-        """
+        r"""
         检查APK文件是否已关联到当前程序。
         
-        通过检查Windows注册表中的相关键值来判断关联状态：
-        - HKCR\ApkFile.apkhelper
-        - HKCU\...\FileExts\.apk\OpenWithProgids\ApkFile.apkhelper
+        通过检查Windows注册表中的相关键值来判断关联状态，判断规则：
+        1. HKCR\ApkFile.apkhelper 必须存在
+        2. 如果存在 HKCU\...\FileExts\.apk\UserChoice 的 Progid 键，则必须为 ApkFile.apkhelper
+           如果不存在 Progid 键，则 HKCR\.apk 默认键值必须是 ApkFile.apkhelper
         
         Returns:
-            bool: 已关联返回True，否则返回False
+            bool: 已关联APK返回True，否则返回False
         """
         try:
-            # 检查HKCR\ApkFile.apkhelper是否存在
-            hkcr_condition = False
+            # 条件1：检查HKCR\ApkFile.apkhelper是否存在
+            condition1 = False
             try:
                 with winreg.OpenKey(winreg.HKEY_CLASSES_ROOT, "ApkFile.apkhelper", 0, winreg.KEY_READ):
-                    hkcr_condition = True
-                    app_logger.debug("找到 HKCR\\ApkFile.apkhelper 注册表项")
+                    condition1 = True
+                    app_logger.debug("条件1满足: 找到 HKCR\\ApkFile.apkhelper 注册表项")
             except OSError as e:
-                app_logger.debug(f"未找到 HKCR\\ApkFile.apkhelper 注册表项: {e}")
+                app_logger.debug(f"条件1不满足: 未找到 HKCR\\ApkFile.apkhelper 注册表项: {e}")
             
-            # 检查HKCU\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\FileExts\.apk\OpenWithProgids中是否存在ApkFile.apkhelper
-            hkcu_condition = False
+            # 如果条件1不满足，直接返回False
+            if not condition1:
+                return False
+            
+            # 条件2：检查UserChoice的Progid或HKCR\.apk默认键值
+            condition2 = False
+            
+            # 先检查UserChoice的Progid是否存在
+            user_choice_progid = None
             try:
-                with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\FileExts\.apk\OpenWithProgids", 0, winreg.KEY_READ) as key:
+                with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\FileExts\.apk\UserChoice", 0, winreg.KEY_READ) as key:
                     try:
-                        val, val_type = winreg.QueryValueEx(key, "ApkFile.apkhelper")
-                        if val is not None:
-                            hkcu_condition = True
-                            app_logger.debug(f"找到 OpenWithProgids 中的 ApkFile.apkhelper: {val}")
+                        progid_val, progid_type = winreg.QueryValueEx(key, "Progid")
+                        user_choice_progid = progid_val
+                        app_logger.debug(f"找到 UserChoice Progid: {progid_val}")
                     except OSError as e:
-                        app_logger.debug(f"OpenWithProgids 中无 ApkFile.apkhelper 项: {e}")
+                        app_logger.debug(f"UserChoice 中无 Progid 项: {e}")
             except OSError as e:
-                app_logger.debug(f"无法打开 OpenWithProgids 注册表项: {e}")
+                app_logger.debug(f"不存在 UserChoice 注册表项: {e}")
             
-            # 两个条件都满足才算已关联
-            result = hkcr_condition and hkcu_condition
-            app_logger.debug(f"检查结果: hkcr={hkcr_condition}, hkcu={hkcu_condition}, 关联状态={result}")
+            # 根据UserChoice的Progid是否存在，采用不同的判断逻辑
+            if user_choice_progid is not None:
+                # 如果存在Progid，则必须为ApkFile.apkhelper或apk_helper.exe
+                if user_choice_progid == "ApkFile.apkhelper" or user_choice_progid == "apk_helper.exe":
+                    condition2 = True
+                    app_logger.debug(f"条件2满足: UserChoice Progid = {user_choice_progid}")
+                else:
+                    app_logger.debug(f"条件2不满足: UserChoice Progid = {user_choice_progid}")
+            else:
+                # 如果不存在Progid，则检查HKCR\.apk默认键值是否是ApkFile.apkhelper
+                try:
+                    with winreg.OpenKey(winreg.HKEY_CLASSES_ROOT, r".apk", 0, winreg.KEY_READ) as key:
+                        try:
+                            default_val, default_type = winreg.QueryValueEx(key, "")
+                            if default_val == "ApkFile.apkhelper":
+                                condition2 = True
+                                app_logger.debug(f"条件2满足: HKCR\\.apk 默认键值 = {default_val}")
+                            else:
+                                app_logger.debug(f"条件2不满足: HKCR\\.apk 默认键值 = {default_val}")
+                        except OSError as e:
+                            app_logger.debug(f"条件2不满足: HKCR\\.apk 无默认键值: {e}")
+                except OSError as e:
+                    app_logger.debug(f"条件2不满足: 无法打开 HKCR\\.apk 注册表项: {e}")
+            
+            # 条件1和条件2都满足才算已关联
+            result = condition1 and condition2
+            app_logger.debug(f"检查结果: 条件1={condition1}, 条件2={condition2}, 关联状态={result}")
             return result
         except ImportError:
+            # 非Windows系统，不支持注册表操作
             app_logger.info("非Windows系统")
             return False
         except Exception as e:
@@ -9017,89 +9229,94 @@ class ApkHelper(QMainWindow):
         执行关联APK脚本。
         
         调用外部批处理脚本注册APK文件关联，使双击APK文件时使用本程序打开。
-        需要管理员权限执行。
+        需要管理员权限执行，使用异步方式避免界面卡死。
         """
-        # 解决32位python程序无法调用64位system32目录下的程序
-        custom_env = os.environ.copy()
-        x64_system_path=os.path.expandvars(r"%windir%\sysnative")
-        custom_env["PATH"] = custom_env["PATH"] + f";{x64_system_path}"
-
-        global BASE_DIR
-        script_path = os.path.join(BASE_DIR, "☆reg_apk.bat")
-        if os.path.exists(script_path):
-            try:
-                result = subprocess.run([script_path], shell=True, capture_output=True, text=True, env=custom_env, timeout=20)
-                # app_logger.debug(f"{script_path} 注册apk文件关联脚本执行结果: {result}")
-                if result.returncode == 0:
-                    QMessageBox.information(self, "成功", "关联APK成功！")
-                else:
-                    QMessageBox.critical(self, "错误", f"执行失败:\n{result.stderr}\n\n注册可能已经成功完成")
-            except subprocess.TimeoutExpired:
-                QMessageBox.critical(self, "错误", "执行操作超时！")
-            except Exception as e:
-                QMessageBox.critical(self, "错误", f"发生错误:\n{str(e)}\n\n注册可能已经成功完成")
+        # 显示执行提示
+        self._show_executing_dialog("注册关联APK", "正在执行注册关联APK操作...\n\n如果弹出管理员权限确认窗口，请点击\"是\"确认。")
+        
+        # 创建异步工作线程
+        self._reg_apk_worker = ElevatedScriptWorker("☆reg_apk.bat", "注册关联APK", timeout=30)
+        self._reg_apk_worker.finished.connect(self._on_reg_apk_finished)
+        self._reg_apk_worker.start()
+    
+    def _on_reg_apk_finished(self, success, message, output_content):
+        """
+        关联APK操作完成回调。
+        
+        Args:
+            success: 是否成功
+            message: 结果消息
+            output_content: 脚本输出内容
+        """
+        # 关闭执行提示对话框
+        self._close_executing_dialog()
+        
+        if success:
+            QMessageBox.information(self, "成功", message)
         else:
-            QMessageBox.critical(self, "错误", f"关联APK脚本文件不存在:\n{script_path}")
+            QMessageBox.warning(self, "提示", message)
+        
+        # 刷新关联状态显示
+        self.update_association_status()
     
     def unreg_apk(self):
         """
         执行取消关联APK脚本。
         
         调用外部批处理脚本取消APK文件与本程序的关联。
-        需要管理员权限执行。
+        需要管理员权限执行，使用异步方式避免界面卡死。
         """
-        # 解决32位python程序无法调用64位system32目录下的程序
-        custom_env = os.environ.copy()
-        x64_system_path=os.path.expandvars(r"%windir%\sysnative")
-        custom_env["PATH"] = custom_env["PATH"] + f";{x64_system_path}"
-
-        global BASE_DIR
-        script_path = os.path.join(BASE_DIR, "☆unreg_apk.bat")
-        if os.path.exists(script_path):
-            try:
-                result = subprocess.run([script_path], shell=True, capture_output=True, text=True, env=custom_env, timeout=20)
-                # app_logger.debug(f"{script_path} 取消apk文件关联脚本执行结果: {result}")
-                if result.returncode == 0:
-                    QMessageBox.information(self, "成功", "取消关联APK成功！")
-                else:
-                    QMessageBox.critical(self, "错误", f"执行失败:\n{result.stderr}\n\n取消注册可能已经成功完成")
-            except subprocess.TimeoutExpired:
-                QMessageBox.critical(self, "错误", "执行操作超时！")
-            except Exception as e:
-                QMessageBox.critical(self, "错误", f"发生错误:\n{str(e)}\n\n取消注册可能已经成功完成")
+        # 显示执行提示
+        self._show_executing_dialog("取消关联APK", "正在执行取消关联APK操作...\n\n如果弹出管理员权限确认窗口，请点击\"是\"确认。")
+        
+        # 创建异步工作线程
+        self._unreg_apk_worker = ElevatedScriptWorker("☆unreg_apk.bat", "取消关联APK", timeout=30)
+        self._unreg_apk_worker.finished.connect(self._on_unreg_apk_finished)
+        self._unreg_apk_worker.start()
+    
+    def _on_unreg_apk_finished(self, success, message, output_content):
+        """
+        取消关联APK操作完成回调。
+        
+        Args:
+            success: 是否成功
+            message: 结果消息
+            output_content: 脚本输出内容
+        """
+        # 关闭执行提示对话框
+        self._close_executing_dialog()
+        
+        if success:
+            QMessageBox.information(self, "成功", message)
         else:
-            QMessageBox.critical(self, "错误", f"取消关联APK脚本文件不存在:\n{script_path}")
+            QMessageBox.warning(self, "提示", message)
+        
+        # 刷新关联状态显示
+        self.update_association_status()
     
     def check_context_menu(self):
         """
         检查APK文件右键菜单是否已添加。
         
-        通过检查Windows注册表 HKCR\.apk\shell\APKHelper 键值来判断右键菜单状态。
-        该注册表路径由 ☆add_menu.bat 脚本创建，用于在APK文件右键菜单中添加
-        "使用 APK Helper 打开"选项。
+        通过检查Windows注册表中的相关键值来判断右键菜单状态：
+        - HKCR\SystemFileAssociations\.apk\shell\APKHelper
         
         Returns:
             bool: 已添加右键菜单返回True，否则返回False
-        
-        Note:
-            - 注册表路径: HKCR\.apk\shell\APKHelper
-            - 仅适用于Windows系统
         """
         try:
             # 尝试打开注册表项，如果存在则说明右键菜单已添加
-            with winreg.OpenKey(winreg.HKEY_CLASSES_ROOT, r".apk\shell\APKHelper", 0, winreg.KEY_READ):
-                app_logger.debug("找到 HKCR\\.apk\\shell\\APKHelper 注册表项")
+            with winreg.OpenKey(winreg.HKEY_CLASSES_ROOT, r"SystemFileAssociations\.apk\shell\APKHelper", 0, winreg.KEY_READ):
+                app_logger.debug("找到 HKCR\\SystemFileAssociations\\.apk\\shell\\APKHelper 注册表项")
                 return True
         except OSError as e:
-            # 注册表项不存在，说明右键菜单未添加
-            app_logger.debug(f"未找到 HKCR\\.apk\\shell\\APKHelper 注册表项: {e}")
+            app_logger.debug(f"未找到 HKCR\\SystemFileAssociations\\.apk\\shell\\APKHelper 注册表项: {e}")
             return False
         except ImportError:
             # 非Windows系统，不支持注册表操作
             app_logger.info("非Windows系统")
             return False
         except Exception as e:
-            # 其他异常情况
             app_logger.warning(f"检查右键菜单状态时出错: {e}")
             return False
     
@@ -9107,84 +9324,133 @@ class ApkHelper(QMainWindow):
         """
         执行添加右键菜单脚本。
         
-        调用外部批处理脚本 ☆add_menu.bat 添加APK文件右键菜单，
-        使右键APK文件时显示"使用 APK Helper 打开"选项。
-        
-        脚本会创建以下注册表项：
-        - HKCR\.apk\shell\APKHelper (默认值: 菜单显示名称)
-        - HKCR\.apk\shell\APKHelper\Icon (图标路径)
-        - HKCR\.apk\shell\APKHelper\command (命令行)
-        
-        Note:
-            - 需要管理员权限执行，脚本会自动请求权限
-            - 32位程序在64位系统上需要通过sysnative访问system32
+        调用外部批处理脚本添加APK文件右键菜单，APK文件右键显示"使用 APK Helper 打开"选项。
+        需要管理员权限执行，使用异步方式避免界面卡死。
         """
-        # 解决32位python程序无法调用64位system32目录下的程序
-        custom_env = os.environ.copy()
-        x64_system_path = os.path.expandvars(r"%windir%\sysnative")
-        custom_env["PATH"] = custom_env["PATH"] + f";{x64_system_path}"
-
-        global BASE_DIR
-        script_path = os.path.join(BASE_DIR, "☆add_menu.bat")
+        # 显示执行提示
+        self._show_executing_dialog("添加右键菜单", "正在执行添加右键菜单操作...\n\n如果弹出管理员权限确认窗口，请点击\"是\"确认。")
         
-        if os.path.exists(script_path):
-            try:
-                app_logger.debug(f"执行添加右键菜单脚本: {script_path}")
-                result = subprocess.run([script_path], shell=True, capture_output=True, text=True, env=custom_env, timeout=20)
-                if result.returncode == 0:
-                    app_logger.info("添加右键菜单成功")
-                    QMessageBox.information(self, "成功", "添加右键菜单成功！")
-                else:
-                    app_logger.warning(f"添加右键菜单脚本返回非零: {result.stderr}")
-                    QMessageBox.critical(self, "错误", f"执行失败:\n{result.stderr}\n\n添加可能已经成功完成")
-            except subprocess.TimeoutExpired:
-                app_logger.error("添加右键菜单操作超时")
-                QMessageBox.critical(self, "错误", "执行操作超时！")
-            except Exception as e:
-                app_logger.error(f"添加右键菜单时发生错误: {e}")
-                QMessageBox.critical(self, "错误", f"发生错误:\n{str(e)}\n\n添加可能已经成功完成")
+        # 创建异步工作线程
+        self._add_menu_worker = ElevatedScriptWorker("☆add_menu.bat", "添加右键菜单", timeout=30)
+        self._add_menu_worker.finished.connect(self._on_add_menu_finished)
+        self._add_menu_worker.start()
+    
+    def _on_add_menu_finished(self, success, message, output_content):
+        """
+        添加右键菜单操作完成回调。
+        
+        Args:
+            success: 是否成功
+            message: 结果消息
+            output_content: 脚本输出内容
+        """
+        # 关闭执行提示对话框
+        self._close_executing_dialog()
+        
+        if success:
+            QMessageBox.information(self, "成功", message)
         else:
-            app_logger.error(f"添加右键菜单脚本文件不存在: {script_path}")
-            QMessageBox.critical(self, "错误", f"添加右键菜单脚本文件不存在:\n{script_path}")
+            QMessageBox.warning(self, "提示", message)
+        
+        # 刷新右键菜单状态显示
+        self.update_context_menu_status()
     
     def remove_context_menu(self):
         """
         执行清除右键菜单脚本。
         
-        调用外部批处理脚本 ☆rm_menu.bat 清除APK文件右键菜单。
-        脚本会删除注册表项 HKCR\.apk\shell\APKHelper 及其子项。
-        
-        Note:
-            - 需要管理员权限执行，脚本会自动请求权限
-            - 32位程序在64位系统上需要通过sysnative访问system32
+        调用外部批处理脚本清除APK文件右键菜单。
+        需要管理员权限执行，使用异步方式避免界面卡死。
         """
-        # 解决32位python程序无法调用64位system32目录下的程序
-        custom_env = os.environ.copy()
-        x64_system_path = os.path.expandvars(r"%windir%\sysnative")
-        custom_env["PATH"] = custom_env["PATH"] + f";{x64_system_path}"
-
-        global BASE_DIR
-        script_path = os.path.join(BASE_DIR, "☆rm_menu.bat")
+        # 显示执行提示
+        self._show_executing_dialog("清除右键菜单", "正在执行清除右键菜单操作...\n\n如果弹出管理员权限确认窗口，请点击\"是\"确认。")
         
-        if os.path.exists(script_path):
-            try:
-                app_logger.debug(f"执行清除右键菜单脚本: {script_path}")
-                result = subprocess.run([script_path], shell=True, capture_output=True, text=True, env=custom_env, timeout=20)
-                if result.returncode == 0:
-                    app_logger.info("清除右键菜单成功")
-                    QMessageBox.information(self, "成功", "清除右键菜单成功！")
-                else:
-                    app_logger.warning(f"清除右键菜单脚本返回非零: {result.stderr}")
-                    QMessageBox.critical(self, "错误", f"执行失败:\n{result.stderr}\n\n清除可能已经成功完成")
-            except subprocess.TimeoutExpired:
-                app_logger.error("清除右键菜单操作超时")
-                QMessageBox.critical(self, "错误", "执行操作超时！")
-            except Exception as e:
-                app_logger.error(f"清除右键菜单时发生错误: {e}")
-                QMessageBox.critical(self, "错误", f"发生错误:\n{str(e)}\n\n清除可能已经成功完成")
+        # 创建异步工作线程
+        self._remove_menu_worker = ElevatedScriptWorker("☆rm_menu.bat", "清除右键菜单", timeout=30)
+        self._remove_menu_worker.finished.connect(self._on_remove_menu_finished)
+        self._remove_menu_worker.start()
+    
+    def _on_remove_menu_finished(self, success, message, output_content):
+        """
+        清除右键菜单操作完成回调。
+        
+        Args:
+            success: 是否成功
+            message: 结果消息
+            output_content: 脚本输出内容
+        """
+        # 关闭执行提示对话框
+        self._close_executing_dialog()
+        
+        if success:
+            QMessageBox.information(self, "成功", message)
         else:
-            app_logger.error(f"清除右键菜单脚本文件不存在: {script_path}")
-            QMessageBox.critical(self, "错误", f"清除右键菜单脚本文件不存在:\n{script_path}")
+            QMessageBox.warning(self, "提示", message)
+        
+        # 刷新右键菜单状态显示
+        self.update_context_menu_status()
+    
+    def _show_executing_dialog(self, title, message):
+        """
+        显示执行中的提示对话框。
+        
+        Args:
+            title: 对话框标题
+            message: 提示消息
+        """
+        # 如果已有对话框，先关闭
+        if hasattr(self, '_executing_dialog') and self._executing_dialog is not None:
+            self._executing_dialog.close()
+            self._executing_dialog.deleteLater()
+        
+        # 创建消息对话框（模态但允许界面刷新）
+        self._executing_dialog = QMessageBox(self)
+        self._executing_dialog.setWindowTitle(title)
+        self._executing_dialog.setText(message)
+        self._executing_dialog.setIcon(QMessageBox.Information)
+        self._executing_dialog.setStandardButtons(QMessageBox.NoButton)
+        # 设置窗口保持在最前
+        self._executing_dialog.setWindowFlags(
+            self._executing_dialog.windowFlags() | Qt.WindowStaysOnTopHint
+        )
+        self._executing_dialog.show()
+        
+        # 强制刷新界面，确保窗口立即显示
+        QApplication.processEvents()
+    
+    def _close_executing_dialog(self):
+        """关闭执行中的提示对话框"""
+        if hasattr(self, '_executing_dialog') and self._executing_dialog is not None:
+            self._executing_dialog.hide()  # 先隐藏
+            self._executing_dialog.close()
+            self._executing_dialog.deleteLater()
+            self._executing_dialog = None
+            # 强制刷新界面，确保窗口立即关闭
+            QApplication.processEvents()
+    
+    def update_association_status(self):
+        """更新APK关联状态显示 - 检查注册表并更新标签样式"""
+        is_associated = self.check_apk_association()
+        if hasattr(self, 'association_status_label'):
+            if is_associated:
+                self.association_status_label.setText("当前状态：已关联APK文件")
+                self.association_status_label.setStyleSheet("font-size: 13px; font-weight: bold; padding: 5px; color: green;")
+            else:
+                self.association_status_label.setText("当前状态：未关联APK文件")
+                self.association_status_label.setStyleSheet("font-size: 13px; font-weight: bold; padding: 5px; color: red;")
+            app_logger.debug(f"APK关联状态已刷新: {'已关联' if is_associated else '未关联'}")
+    
+    def update_context_menu_status(self):
+        """更新右键菜单状态显示 - 检查注册表并更新标签样式"""
+        has_menu = self.check_context_menu()
+        if hasattr(self, 'context_menu_status_label'):
+            if has_menu:
+                self.context_menu_status_label.setText("当前状态：已添加右键菜单")
+                self.context_menu_status_label.setStyleSheet("font-size: 13px; font-weight: bold; padding: 5px; color: green;")
+            else:
+                self.context_menu_status_label.setText("当前状态：未添加右键菜单")
+                self.context_menu_status_label.setStyleSheet("font-size: 13px; font-weight: bold; padding: 5px; color: red;")
+            app_logger.debug(f"右键菜单状态已刷新: {'已添加' if has_menu else '未添加'}")
     
     def copy_custom_info(self):
         """
@@ -9281,30 +9547,25 @@ class ApkHelper(QMainWindow):
         apk_association_layout.setSpacing(10)  # 控件之间的间距
         
         # 关联状态显示标签 - 显示当前APK文件关联状态
-        association_status_label = QLabel()
-        association_status_label.setAlignment(Qt.AlignCenter)
-        association_status_label.setStyleSheet("font-size: 13px; font-weight: bold; padding: 5px;")
-        
-        def update_association_status():
-            """更新APK关联状态显示 - 检查注册表并更新标签样式"""
-            is_associated = self.check_apk_association()
-            if is_associated:
-                association_status_label.setText("当前状态：已关联APK文件")
-                association_status_label.setStyleSheet("font-size: 13px; font-weight: bold; padding: 5px; color: green;")
-            else:
-                association_status_label.setText("当前状态：未关联APK文件")
-                association_status_label.setStyleSheet("font-size: 13px; font-weight: bold; padding: 5px; color: red;")
-            app_logger.debug(f"APK关联状态已刷新: {'已关联' if is_associated else '未关联'}")
+        self.association_status_label = QLabel()
+        self.association_status_label.setAlignment(Qt.AlignCenter)
+        self.association_status_label.setStyleSheet("font-size: 13px; font-weight: bold; padding: 5px;")
         
         # 初始化时更新状态显示
-        update_association_status()
-        apk_association_layout.addWidget(association_status_label)
+        self.update_association_status()
+        apk_association_layout.addWidget(self.association_status_label)
         
         # 功能说明文字
         association_info = QLabel("设置或取消APK文件与本程序的关联。\n双击APK文件时可自动使用本程序打开。")
         association_info.setWordWrap(True)
         association_info.setAlignment(Qt.AlignCenter)
         apk_association_layout.addWidget(association_info)
+        
+        # 提示文字（放在按钮上方，居中）
+        tip_label = QLabel("提示: 需要管理员权限才能成功执行")
+        tip_label.setStyleSheet("color: blue; font-size: 12px;")
+        tip_label.setAlignment(Qt.AlignCenter)
+        apk_association_layout.addWidget(tip_label)
         
         # 关联操作按钮布局（水平居中排列）
         association_btn_layout = QHBoxLayout()
@@ -9336,16 +9597,14 @@ class ApkHelper(QMainWindow):
         def on_reg_apk():
             """执行关联APK操作并刷新状态显示"""
             self.reg_apk()
-            update_association_status()
         
         def on_unreg_apk():
             """执行取消关联APK操作并刷新状态显示"""
             self.unreg_apk()
-            update_association_status()
         
         reg_btn.clicked.connect(on_reg_apk)
         unreg_btn.clicked.connect(on_unreg_apk)
-        refresh_btn.clicked.connect(update_association_status)
+        refresh_btn.clicked.connect(self.update_association_status)
         
         # 将APK文件关联区域添加到主布局
         association_layout.addWidget(apk_association_group)
@@ -9357,30 +9616,25 @@ class ApkHelper(QMainWindow):
         context_menu_layout.setSpacing(10)  # 控件之间的间距
         
         # 右键菜单状态显示标签 - 显示当前右键菜单是否已添加
-        context_menu_status_label = QLabel()
-        context_menu_status_label.setAlignment(Qt.AlignCenter)
-        context_menu_status_label.setStyleSheet("font-size: 13px; font-weight: bold; padding: 5px;")
-        
-        def update_context_menu_status():
-            """更新右键菜单状态显示 - 检查注册表并更新标签样式"""
-            has_menu = self.check_context_menu()
-            if has_menu:
-                context_menu_status_label.setText("当前状态：已添加右键菜单")
-                context_menu_status_label.setStyleSheet("font-size: 13px; font-weight: bold; padding: 5px; color: green;")
-            else:
-                context_menu_status_label.setText("当前状态：未添加右键菜单")
-                context_menu_status_label.setStyleSheet("font-size: 13px; font-weight: bold; padding: 5px; color: red;")
-            app_logger.debug(f"右键菜单状态已刷新: {'已添加' if has_menu else '未添加'}")
+        self.context_menu_status_label = QLabel()
+        self.context_menu_status_label.setAlignment(Qt.AlignCenter)
+        self.context_menu_status_label.setStyleSheet("font-size: 13px; font-weight: bold; padding: 5px;")
         
         # 初始化时更新状态显示
-        update_context_menu_status()
-        context_menu_layout.addWidget(context_menu_status_label)
+        self.update_context_menu_status()
+        context_menu_layout.addWidget(self.context_menu_status_label)
         
         # 功能说明文字
         context_menu_info = QLabel("添加或清除APK文件的右键菜单。\n右键APK文件时可选择\"使用 APK Helper 打开\"。")
         context_menu_info.setWordWrap(True)
         context_menu_info.setAlignment(Qt.AlignCenter)
         context_menu_layout.addWidget(context_menu_info)
+        
+        # 提示文字（放在按钮上方，居中）
+        tip_label = QLabel("提示: 需要管理员权限才能成功执行")
+        tip_label.setStyleSheet("color: blue; font-size: 12px;")
+        tip_label.setAlignment(Qt.AlignCenter)
+        context_menu_layout.addWidget(tip_label)
         
         # 右键菜单操作按钮布局（水平居中排列）
         context_menu_btn_layout = QHBoxLayout()
@@ -9412,17 +9666,15 @@ class ApkHelper(QMainWindow):
         def on_add_menu():
             """执行添加右键菜单操作并刷新状态显示"""
             self.add_context_menu()
-            update_context_menu_status()
         
         def on_remove_menu():
             """执行清除右键菜单操作并刷新状态显示"""
             self.remove_context_menu()
-            update_context_menu_status()
         
         # 连接按钮信号到槽函数
         add_menu_btn.clicked.connect(on_add_menu)
         remove_menu_btn.clicked.connect(on_remove_menu)
-        refresh_menu_btn.clicked.connect(update_context_menu_status)
+        refresh_menu_btn.clicked.connect(self.update_context_menu_status)
         
         # 将右键菜单区域添加到主布局
         association_layout.addWidget(context_menu_group)

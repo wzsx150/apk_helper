@@ -18,18 +18,32 @@
 
 - 查看应用图标（多种图标类型）和基本信息
 - 查看应用权限
-- 查看签名信息
-- 复制应用信息的文本
-- 保存应用信息的文本
-- 保存应用图标
-- 比较签名证书哈希值，查看是不是同一个作者制作
-- 支持拖拽APK文件到窗口
+- 查看签名信息和证书哈希值
+- 查看文件大小和MD5值
+- 复制自定义格式的应用信息到剪贴板
+- 复制应用所有信息到剪贴板
+- 保存应用所有信息到文本文件
+- 保存应用图标到PNG文件
+- 比较签名证书哈希值是否相同
+- 表格选中单项或多项内容后，按Ctrl+C键可复制选中内容
+- 可设定复制表格选中内容的分隔符
+- 批量重命名APK文件
+- 支持关联到APK文件，作为默认打开程序
+- 支持添加右键菜单，使用本程序打开APK文件
+- 支持拖拽APK文件到程序窗口进行解析
 
-本工具截图如下：
 
 
+#### 本工具截图
 
-<img src="README.assets/apk helper-new.png" style="zoom:50%;" />
+<img src="README.assets/apk helper-new-5.0_1.png" style="zoom:50%;" />
+
+<img src="README.assets/apk helper-new-5.0_2.png" style="zoom:50%;" />
+
+<img src="README.assets/apk helper-new-5.0_3.png" style="zoom:50%;" />
+
+<img src="README.assets/apk helper-new-5.0_4.png" style="zoom:50%;" />
+
 
 #### 使用方法
 
@@ -41,7 +55,7 @@
 python apk_helper.py
 ```
 
-注：另外，apk_helper_test_androguard.py是androguard版，使用 androguard 库进行解析，功能没有 aapt2 版完整，基本也能使用。其他.py文件基本都为测试文件。
+注：另外，apk_helper_test_androguard.py是androguard版，使用 androguard 库进行解析，功能没有 aapt2 版完整，基本也能使用（后续不会更新androguard 版）。其他.py文件基本都为测试文件。
 
 
 
@@ -49,7 +63,7 @@ python apk_helper.py
 
 从release中下载制作好的exe程序绿色版压缩包，解压后，运行apk_helper.exe。该程序自带python依赖，无须在系统中安装python和依赖库。
 
-也可以命令行里调用，直接解析某一个apk：
+支持命令行里调用，直接解析某一个apk：
 
 ```
 apk_helper.exe 1.apk
@@ -57,7 +71,7 @@ apk_helper.exe 1.apk
 
 
 
-其他命令：
+其他命令（仅用于批量测试xml类型的安卓图标）：
 
 ```cmd
 py3.8_32 apk_helper.py -b E:\APP -l DEBUG > logs\20260306-11.txt
@@ -81,6 +95,8 @@ pip install pillow PyQt5  nuitka androguard asn1crypto  -i https://pypi.tuna.tsi
 
 aapt2工具版本：2.19 (build-tools_r33.0.3内置的版本，32位)
 
+MinSudo工具版本：1.0 (用于执行高权限命令注册表修改，32位)
+
 
 
 #### 打包成exe程序
@@ -89,10 +105,10 @@ python 3.8.10是python支持win7的最后一个版本，所以这里选用python
 
 python 3.8 32位版仅支持androguard-4.0.1，更高版本的androguard需要新版python。
 
-打包成独立版exe的命令（aapt2版）：
+打包成独立版exe的命令（aapt2版，推荐）：
 
 ```cmd
-py3.8_32 -m nuitka --standalone --assume-yes-for-downloads --windows-console-mode=disable --output-dir=dist --enable-plugin=pyqt5 --windows-icon-from-ico=1.ico --include-data-files=1.ico=./ --include-data-files=aapt2.exe=./ --include-data-files=*.bat=./ --include-raw-dir=translations=translations apk_helper.py
+py3.8_32 -m nuitka --standalone --assume-yes-for-downloads --windows-console-mode=disable --output-dir=dist --enable-plugin=pyqt5 --windows-icon-from-ico=1.ico --include-data-files=1.ico=./ --include-data-files=aapt2.exe=./ --include-data-files=MinSudo.exe=./ --include-data-files=*.bat=./ --include-raw-dir=translations=translations apk_helper.py
 ```
 
 或androguard版（不推荐）：
@@ -101,7 +117,11 @@ py3.8_32 -m nuitka --standalone --assume-yes-for-downloads --windows-console-mod
 py3.8_32 -m nuitka --standalone --assume-yes-for-downloads --windows-console-mode=disable --output-dir=dist --enable-plugin=pyqt5 --include-package-data=androguard --windows-icon-from-ico=1.ico --include-data-files=1.ico=./ --include-data-files=aapt2.exe=./ --include-data-files=*.bat=./ --include-raw-dir=translations=translations apk_helper_test_androguard.py
 ```
 
-注：--windows-console-mode=disable （GUI程序，禁用控制台）参数还可以设置成attach（GUI程序，也支持控制台运行时输出内容）、force（控制台程序，显示控制台窗口）、hide（控制台程序，隐藏控制台窗口，启动时控制台窗口会一闪而过）。推荐 disable 模式。
+注：
+
+1、请将 py3.8_32 替换成操作系统中对应的Python命令或者程序路径。
+
+2、--windows-console-mode=disable （GUI程序，禁用控制台）参数还可以设置成attach（GUI程序，也支持控制台运行时输出内容）、force（控制台程序，显示控制台窗口）、hide（控制台程序，隐藏控制台窗口，启动时控制台窗口会一闪而过）。推荐 disable 模式。
 
 
 
@@ -112,9 +132,10 @@ py3.8_32 -m nuitka --standalone --assume-yes-for-downloads --windows-console-mod
 ```reg
 HKCR\ApkFile.apkhelper
 HKCU\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\FileExts\.apk
+HKCR\SystemFileAssociations\.apk\shell\APKHelper
 ```
 
-具体实现，参考☆reg_apk.bat、☆unreg_apk.bat文件
+具体实现，参考 *.bat 文件
 
 
 
@@ -142,6 +163,12 @@ android.graphics.drawable  |  API reference  |  Android Developers  https://deve
 
 
 
+M2Team/NanaRun: Application runtime environment customization utility  https://github.com/M2Team/NanaRun
+
+
+
+
+
 ##### 注意
 
 - 当前目录下的apk_helper.exe文件是演示程序，是other目录下apk_helper.bat使用Bat_To_Exe_Converter工具转化成exe。仅作为关联apk文件的演示功能。
@@ -158,7 +185,7 @@ android.graphics.drawable  |  API reference  |  Android Developers  https://deve
 
 - android16-release 目录是存放的从官方下载的安卓部分源码。
 
-- androguard-4.0.1需要修改androguard库中 <Python安装目录>\Lib\site-packages\androguard\core\apk\__init__.py 的源码，解决部分apk解析时报错的问题，将两行代码的raise ResParserError改成logger.warning。修改完成后的代码如下：
+- androguard-4.0.1需要修改androguard库中 <Python安装目录>\Lib\site-packages\androguard\core\apk\__init__.py 的源码，解决部分apk解析时报错的问题，将两行代码的 raise ResParserError 改成 logger.warning。修改完成后的代码如下：
 
   ```
   class ARSCResTypeSpec:
