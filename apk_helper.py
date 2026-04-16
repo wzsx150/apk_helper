@@ -47,7 +47,7 @@ from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QHeaderView, QDesktopWidget,
     QPushButton, QFileDialog, QTextEdit, QLabel, QGroupBox, QSizePolicy, QMessageBox, QLineEdit,
     QTableWidget, QTableWidgetItem, QGridLayout, QSplitter, QStackedWidget, QDialog, QCheckBox,
-    QComboBox, QTabWidget
+    QComboBox, QTabWidget, QMenu
 )
 from PyQt5.QtGui import QPixmap, QIcon, QTextOption, QCursor, QFontMetrics
 from PyQt5.QtCore import Qt, QSize, QTimer, QTranslator, QCoreApplication, QThread, pyqtSignal
@@ -814,6 +814,7 @@ DEFAULT_CONFIG = {
     "row_separator": "\\n",
     "col_separator": "\\t",
     "copy_custom_format": "{app_name}({package_name})-{version_name}",
+    "copy_custom_no_popup": False,  # 复制自定义信息后是否不弹框提示
     "rename_format": "{app_name}_{version_name}",
     "rename_include_subdir": False,
     "enable_win11_new_menu": False
@@ -955,6 +956,13 @@ def validate_config(config_data):
         else:
             app_logger.debug(f"配置项验证 - copy_custom_format: 有效")
     
+    if "copy_custom_no_popup" in config_data:
+        if not isinstance(config_data["copy_custom_no_popup"], bool):
+            errors.append("复制后不弹框提示选项必须是布尔值")
+            app_logger.debug("配置项验证 - copy_custom_no_popup: 类型错误")
+        else:
+            app_logger.debug(f"配置项验证 - copy_custom_no_popup: 有效 ({config_data['copy_custom_no_popup']})")
+    
     if "rename_format" in config_data:
         if not isinstance(config_data["rename_format"], str):
             errors.append("重命名格式必须是字符串")
@@ -1067,6 +1075,7 @@ def save_config():
         "row_separator": escape_separator(CustomTableWidget.row_separator),
         "col_separator": escape_separator(CustomTableWidget.col_separator),
         "copy_custom_format": config.get("copy_custom_format", DEFAULT_CONFIG["copy_custom_format"]),
+        "copy_custom_no_popup": config.get("copy_custom_no_popup", DEFAULT_CONFIG["copy_custom_no_popup"]),
         "rename_format": config.get("rename_format", DEFAULT_CONFIG["rename_format"]),
         "rename_include_subdir": config.get("rename_include_subdir", DEFAULT_CONFIG["rename_include_subdir"]),
         "enable_win11_new_menu": config.get("enable_win11_new_menu", DEFAULT_CONFIG["enable_win11_new_menu"])
@@ -7427,6 +7436,56 @@ class CustomTableWidget(QTableWidget):
                 super().keyPressEvent(event)
         else:
             super().keyPressEvent(event)
+    
+    def contextMenuEvent(self, event):
+        """
+        处理右键菜单事件。
+        
+        提供复制选中单元格内容的右键菜单选项。
+        
+        Args:
+            event: QContextMenuEvent右键菜单事件对象
+        """
+        menu = QMenu(self)
+        
+        # 创建复制动作
+        copy_action = menu.addAction("复制")
+        copy_action.setToolTip("复制选中单元格内容到剪贴板")
+        
+        # 检查是否有选中的单元格
+        selected_items = self.selectedItems()
+        if not selected_items:
+            copy_action.setEnabled(False)
+        
+        # 显示菜单并获取用户选择
+        action = menu.exec_(event.globalPos())
+        
+        if action == copy_action and selected_items:
+            # 执行复制操作（复用 keyPressEvent 中的逻辑）
+            rows = set()
+            cols = set()
+            item_dict = {}
+            
+            for item in selected_items:
+                row = item.row()
+                col = item.column()
+                rows.add(row)
+                cols.add(col)
+                item_dict[(row, col)] = item.text()
+            
+            sorted_rows = sorted(rows)
+            sorted_cols = sorted(cols)
+            
+            copied_lines = []
+            for row in sorted_rows:
+                row_data = []
+                for col in sorted_cols:
+                    row_data.append(item_dict.get((row, col), ""))
+                copied_lines.append(self.col_separator.join(row_data))
+            
+            if copied_lines:
+                clipboard = QApplication.clipboard()
+                clipboard.setText(self.row_separator.join(copied_lines))
 
 # 自定义文本类，继承 QTextEdit
 class CustomTextEdit(QTextEdit):
@@ -9996,7 +10055,11 @@ class ApkHelper(QMainWindow):
             clipboard.setText(result)
             
             app_logger.debug(f"已复制自定义信息: {result[:50]}{'...' if len(result) > 50 else ''}")
-            QMessageBox.information(self, "成功", f"(可以在更多设置中自定义格式模版)\n自定义信息已复制到剪贴板:\n\n{result[:100]}{'...' if len(result) > 100 else ''}")
+            
+            # 根据配置决定是否弹框提示
+            no_popup = config.get("copy_custom_no_popup", DEFAULT_CONFIG["copy_custom_no_popup"])
+            if not no_popup:
+                QMessageBox.information(self, "成功", f"(可以在更多设置中自定义格式模版)\n自定义信息已复制到剪贴板:\n\n{result[:100]}{'...' if len(result) > 100 else ''}")
             
         except Exception as e:
             app_logger.error(f"复制自定义信息失败: {e}")
@@ -10262,6 +10325,12 @@ class ApkHelper(QMainWindow):
         copy_format_layout.addWidget(copy_format_edit)
         
         copy_custom_layout.addWidget(copy_format_group)
+        
+        # 复制后不弹框提示选项
+        copy_no_popup_checkbox = QCheckBox("每次复制自定义信息后不再弹框提示")
+        copy_no_popup_checkbox.setToolTip("勾选后，点击\"复制自定义信息\"按钮时将不再弹出提示框")
+        copy_no_popup_checkbox.setChecked(config.get("copy_custom_no_popup", DEFAULT_CONFIG["copy_custom_no_popup"]))
+        copy_custom_layout.addWidget(copy_no_popup_checkbox)
         
         # 复制设置按钮布局（居中）
         copy_btn_layout = QHBoxLayout()
@@ -10855,8 +10924,9 @@ class ApkHelper(QMainWindow):
                 QMessageBox.warning(dialog, "警告", err_msg)
                 return
             config["copy_custom_format"] = copy_format
+            config["copy_custom_no_popup"] = copy_no_popup_checkbox.isChecked()
             if save_config():
-                app_logger.info(f"复制设置已保存: {copy_format}")
+                app_logger.info(f"复制设置已保存: {copy_format}, 不弹框提示: {copy_no_popup_checkbox.isChecked()}")
                 QMessageBox.information(dialog, "成功", "复制设置已保存")
             else:
                 QMessageBox.warning(dialog, "警告", "配置保存失败")
@@ -10864,6 +10934,7 @@ class ApkHelper(QMainWindow):
         def reset_copy_settings():
             """恢复复制设置默认值"""
             copy_format_edit.setText(DEFAULT_CONFIG["copy_custom_format"])
+            copy_no_popup_checkbox.setChecked(DEFAULT_CONFIG["copy_custom_no_popup"])
             app_logger.debug("复制设置已恢复默认值")
         
         copy_save_btn.clicked.connect(save_copy_settings)
