@@ -76,6 +76,15 @@ BASE_DIR = ""    # 基目录，可能会在临时目录
 PRO_DIR = ""     # 程序或者脚本实际所在目录
 USE_NATIVE_AXML_PARSER = True    # 是否使用python代码解析AXML，如果选否，则会使用aapt2解析AXML
 MAX_RECURSION_DEPTH = 6    # 资源引用递归深度限制
+WINDOWS_BUILD_VERSION = 0    # Windows系统build版本号，用于判断是否为Win11及以上版本
+
+# MSIX包在注册表中的完整子键名称，格式: <Name>_<Version>_<Arch>__<PublisherHash>
+# 同一个MSIX包在不同Win11电脑上的此名称完全一致，由包名、版本、架构和发布者哈希值决定
+# 用于快速检测MSIX是否已安装，直接检查该子键是否存在即可，无需遍历所有包
+# 安装MSIX后，可在以下注册表路径下找到此子键：
+#   HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Appx\AppxAllUserStore\Applications
+#   HKCU\Software\Classes\Local Settings\Software\Microsoft\Windows\CurrentVersion\AppModel\Repository\Packages
+MSIX_PACKAGE_REG_NAME = "ApkHelperContextMenu_1.0.0.0_neutral__fzjcw6gemqd32"
 
 
 # 获取操作系统位数信息，根据不同位数的windows系统，进行不同的处理。将来可以扩展。
@@ -806,7 +815,8 @@ DEFAULT_CONFIG = {
     "col_separator": "\\t",
     "copy_custom_format": "{app_name}({package_name})-{version_name}",
     "rename_format": "{app_name}_{version_name}",
-    "rename_include_subdir": False
+    "rename_include_subdir": False,
+    "enable_win11_new_menu": False
 }
 
 config = {}
@@ -962,6 +972,13 @@ def validate_config(config_data):
         else:
             app_logger.debug(f"配置项验证 - rename_include_subdir: 有效 ({config_data['rename_include_subdir']})")
     
+    if "enable_win11_new_menu" in config_data:
+        if not isinstance(config_data["enable_win11_new_menu"], bool):
+            errors.append("Win11新版右键菜单选项必须是布尔值")
+            app_logger.debug("配置项验证 - enable_win11_new_menu: 类型错误")
+        else:
+            app_logger.debug(f"配置项验证 - enable_win11_new_menu: 有效 ({config_data['enable_win11_new_menu']})")
+    
     is_valid = len(errors) == 0
     if is_valid:
         app_logger.debug("配置验证结果: 通过")
@@ -1051,7 +1068,8 @@ def save_config():
         "col_separator": escape_separator(CustomTableWidget.col_separator),
         "copy_custom_format": config.get("copy_custom_format", DEFAULT_CONFIG["copy_custom_format"]),
         "rename_format": config.get("rename_format", DEFAULT_CONFIG["rename_format"]),
-        "rename_include_subdir": config.get("rename_include_subdir", DEFAULT_CONFIG["rename_include_subdir"])
+        "rename_include_subdir": config.get("rename_include_subdir", DEFAULT_CONFIG["rename_include_subdir"]),
+        "enable_win11_new_menu": config.get("enable_win11_new_menu", DEFAULT_CONFIG["enable_win11_new_menu"])
     }
     
     app_logger.debug(f"准备保存的配置数据: {config_data}")
@@ -6719,12 +6737,12 @@ class BatchRenameWorker(QThread):
 
 
 # ============================================================================
-# 提权脚本执行工作线程类
+# 管理员权限执行bat脚本工作线程类
 # ============================================================================
 
 class ElevatedScriptWorker(QThread):
     """
-    提权脚本执行工作线程。
+    管理员权限执行bat脚本工作线程。
     
     在后台线程中执行需要管理员权限的脚本，避免阻塞主界面。
     使用MinSudo提权，通过^转义重定向输出到临时文件。
@@ -6831,6 +6849,180 @@ class ElevatedScriptWorker(QThread):
             
             if result.returncode == 0 and file_exists and content_not_empty:
                 if "OoooK" in output_content:
+                    app_logger.info(f"{self.operation_name}成功")
+                    self.finished.emit(True, f"{self.operation_name}成功！", output_content)
+                else:
+                    app_logger.info(f"{self.operation_name}完成")
+                    self.finished.emit(True, f"{self.operation_name}完成！", output_content)
+            else:
+                # 执行失败，构建详细的错误信息
+                error_parts = []
+                if result.returncode != 0:
+                    # 注意：由于subprocess.run使用了text=True，stderr已经是字符串，不需要decode
+                    stderr_msg = result.stderr if result.stderr else ""
+                    # 移除Windows多余的\r字符
+                    stderr_msg = stderr_msg.replace("\r\r\n", "\n").replace("\r", "")
+                    error_parts.append(f"返回码: {result.returncode}")
+                    if stderr_msg:
+                        error_parts.append(f"错误输出: {stderr_msg}")
+                if not file_exists:
+                    error_parts.append("临时输出文件未创建，程序组件可能未正常运行")
+                if not content_not_empty:
+                    error_parts.append("临时输出内容为空，程序组件可能未正常运行")
+                
+                error_msg = "\n".join(error_parts) if error_parts else "未知错误"
+                app_logger.warning(f"{self.operation_name}执行失败: {error_msg}")
+                self.finished.emit(False, f"执行失败:\n{error_msg}\n\n请确认已赋予管理员权限并杀毒软件放行", output_content)
+                
+        except subprocess.TimeoutExpired:
+            app_logger.error(f"{self.operation_name}操作超时")
+            self.finished.emit(False, f"执行操作超时！\n请检查是否有管理员权限确认窗口等待确认或杀毒软件拦截", "")
+        except Exception as e:
+            app_logger.error(f"{self.operation_name}时发生错误: {e}")
+            self.finished.emit(False, f"发生错误:\n{str(e)}\n\n{self.operation_name}可能已经成功完成", "")
+        finally:
+            self._cleanup_temp_file()
+    
+    def _cleanup_temp_file(self):
+        """清理临时文件"""
+        if self.output_file and os.path.exists(self.output_file):
+            try:
+                os.remove(self.output_file)
+                app_logger.debug(f"已清理临时文件: {self.output_file}")
+            except Exception as e:
+                app_logger.warning(f"清理临时文件失败: {e}")
+
+
+# ============================================================================
+# 管理员权限执行ps1脚本工作线程类
+# ============================================================================
+
+class ElevatedPs1Worker(QThread):
+    """
+    管理员权限执行ps1脚本工作线程。
+    
+    在后台线程中执行需要管理员权限的PowerShell脚本(.ps1)，避免阻塞主界面。
+    使用MinSudo提权，通过-OutputFile参数传递输出文件路径给脚本。
+    脚本内部使用Add-Content -LiteralPath输出到文件，支持所有特殊字符路径。
+    PowerShell脚本输出使用UTF-8编码。
+    
+    Signals:
+        finished: 执行完成信号 (success, message, output_content)
+    
+    Attributes:
+        script_name: 脚本文件完整路径
+        operation_name: 操作名称（用于日志和提示）
+        timeout: 超时时间（秒）
+    """
+    finished = pyqtSignal(bool, str, str)
+    
+    def __init__(self, script_name, operation_name, timeout=30, extra_params=""):
+        """
+        初始化提权PowerShell脚本执行工作线程。
+        
+        Args:
+            script_name: 脚本文件完整路径（如 "C:\\path\\to\\install.ps1"）
+            operation_name: 操作名称（如 "安装组件"）
+            timeout: 超时时间（秒），默认30秒
+            extra_params: 额外传递给PowerShell脚本的命令行参数，默认为空字符串
+        """
+        super().__init__()
+        self.script_name = script_name
+        self.operation_name = operation_name
+        self.timeout = timeout
+        self.extra_params = extra_params
+        self.output_file = None
+    
+    def run(self):
+        """
+        执行提权PowerShell脚本。
+        
+        使用MinSudo提权执行PowerShell脚本，通过-OutputFile参数传递输出文件路径。
+        脚本内部使用Add-Content -LiteralPath输出到文件，支持所有特殊字符路径。
+        执行完成后读取输出文件内容并通过finished信号返回结果。
+        """
+        # 获取脚本路径和MinSudo路径
+        # 注意：script_name已经是完整路径，不需要再拼接BASE_DIR
+        script_path = get_long_path(self.script_name)
+        sudo_path = get_long_path(os.path.join(BASE_DIR, "MinSudo.exe"))
+        
+        # 检查文件是否存在
+        if not os.path.exists(sudo_path):
+            app_logger.error(f"缺少sudo组件文件: {sudo_path}")
+            self.finished.emit(False, f"缺少sudo组件文件:\n{sudo_path}\n\n请确保程序文件完整。", "")
+            return
+        
+        if not os.path.exists(script_path):
+            app_logger.error(f"脚本文件不存在: {script_path}")
+            self.finished.emit(False, f"脚本文件不存在:\n{script_path}\n\n请确保程序文件完整。", "")
+            return
+        
+        import tempfile
+        # 使用tempfile创建临时文件（自动生成唯一文件名）
+        fd, self.output_file = tempfile.mkstemp(suffix=".txt", prefix="apk_helper_")
+        os.close(fd)  # 关闭文件描述符，只保留路径
+        
+        # 构建命令：MinSudo --NoLogo powershell -ExecutionPolicy Bypass -File "script.ps1" -OutputFile "output.txt"
+        # 使用 -ExecutionPolicy Bypass 绕过PowerShell执行策略限制
+        # 通过 -OutputFile 参数传递输出文件路径给脚本，脚本内部使用 Add-Content -LiteralPath 输出
+        # 这种方式支持包含空格、中文、[]等特殊字符的路径
+        cmd_str = f'"{sudo_path}" --NoLogo powershell -ExecutionPolicy Bypass -File "{script_path}" -OutputFile "{self.output_file}"'
+        # 拼接额外参数（如 -InstallPath "C:\path" 等）
+        if self.extra_params:
+            cmd_str += f" {self.extra_params}"
+        app_logger.debug(f"执行命令: {cmd_str}")
+        
+        try:
+            # 解决32位python程序无法调用64位system32目录下的程序，实际可能无法传递给提权后进程
+            custom_env = os.environ.copy()
+            x64_system_path = os.path.expandvars(r"%windir%\sysnative")
+            custom_env["PATH"] = custom_env["PATH"] + f";{x64_system_path}"
+            
+            # 执行命令
+            result = subprocess.run(
+                cmd_str, 
+                shell=True, 
+                text=True, 
+                capture_output=True, 
+                timeout=self.timeout,
+                env=custom_env
+            )
+            
+            app_logger.debug(f"{self.script_name} 执行结果: returncode={result.returncode}")
+            
+            # 等待文件写入完成
+            time.sleep(0.6)
+            
+            # 读取输出文件
+            output_content = ""
+            if os.path.exists(self.output_file):
+                try:
+                    # 注意：PowerShell脚本输出使用UTF-8编码，所以这里使用utf-8编码
+                    # 使用newline=''禁用Python自动换行符转换，然后手动处理\r
+                    with open(self.output_file, 'r', encoding='utf-8', errors='replace', newline='') as f:
+                        output_content = f.read()
+                    # 剥离UTF-8 BOM字符（PowerShell 5.x使用-Encoding UTF8写入文件时会自动添加BOM）
+                    if output_content.startswith('\ufeff'):
+                        output_content = output_content[1:]
+                    # 移除Windows多余的\r字符
+                    output_content = output_content.replace("\r\r\n", "\n").replace("\r", "")
+                    output_content_lite = output_content[:500] + "..." if len(output_content) > 500 else output_content
+                    app_logger.debug(f"输出文件内容: \n{output_content_lite}")
+                except Exception as e:
+                    app_logger.warning(f"读取输出文件失败: {e}")
+            
+            # 判断执行结果：需要满足三个条件
+            # 1. 返回值为0
+            # 2. 输出文件存在
+            # 3. 输出内容不为空
+            file_exists = os.path.exists(self.output_file)
+            content_not_empty = len(output_content.strip()) > 0
+            
+            if result.returncode == 0 and file_exists and content_not_empty:
+                # 根据脚本类型判断成功标志
+                # install.ps1 成功时输出包含"安装完成"
+                # uninstall.ps1 成功时输出包含"卸载完成"
+                if "安装完成" in output_content or "卸载完成" in output_content:
                     app_logger.info(f"{self.operation_name}成功")
                     self.finished.emit(True, f"{self.operation_name}成功！", output_content)
                 else:
@@ -9189,7 +9381,8 @@ class ApkHelper(QMainWindow):
         通过检查Windows注册表中的相关键值来判断关联状态，判断规则：
         1. HKCR\ApkFile.apkhelper 必须存在
         2. 如果存在 HKCU\...\FileExts\.apk\UserChoice 的 Progid 键，则必须为 ApkFile.apkhelper
-           如果不存在 Progid 键，则 HKCR\.apk 默认键值必须是 ApkFile.apkhelper
+           如果存在 HKCU\...\FileExts\.apk\UserChoiceLatest\ProgId 的 ProgId 键，则必须为 ApkFile.apkhelper
+        3. 如果不存在 Progid 键，则 HKCR\.apk 默认键值必须是 ApkFile.apkhelper 或 Applications\apk_helper.exe
         
         Returns:
             bool: 已关联APK返回True，否则返回False
@@ -9208,10 +9401,11 @@ class ApkHelper(QMainWindow):
             if not condition1:
                 return False
             
-            # 条件2：检查UserChoice的Progid或HKCR\.apk默认键值
-            condition2 = False
+            # 条件2：检查Progid是否存在以及键值
+            condition2 = True
+            goto3 = False
             
-            # 先检查UserChoice的Progid是否存在
+            #### 先检查 UserChoice 的 Progid 是否存在
             user_choice_progid = None
             try:
                 with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\FileExts\.apk\UserChoice", 0, winreg.KEY_READ) as key:
@@ -9227,34 +9421,70 @@ class ApkHelper(QMainWindow):
             # 根据UserChoice的Progid是否存在，采用不同的判断逻辑
             if user_choice_progid is not None:
                 # 如果存在Progid，则必须为ApkFile.apkhelper或apk_helper.exe
-                if user_choice_progid == "ApkFile.apkhelper" or user_choice_progid == "apk_helper.exe":
-                    condition2 = True
-                    app_logger.debug(f"条件2满足: UserChoice Progid = {user_choice_progid}")
+                if user_choice_progid == "ApkFile.apkhelper" or user_choice_progid == r"Applications\apk_helper.exe":
+                    app_logger.debug(f"条件2满足1: UserChoice Progid = {user_choice_progid}")
                 else:
+                    condition2 = False
                     app_logger.debug(f"条件2不满足: UserChoice Progid = {user_choice_progid}")
+                    return False
             else:
+                goto3 = True
+            
+            # 使用全局变量 WINDOWS_BUILD_VERSION（已在程序启动时初始化）
+            # 只有 Win11 24H2+ (≥26100) 才支持 UserChoiceLatest
+            if WINDOWS_BUILD_VERSION >= 26100:
+                app_logger.debug(f"检测到系统版本高于 Win11 24H2 : {WINDOWS_BUILD_VERSION}")
+                goto3 = False
+
+                #### 再检查 UserChoiceLatest 的 Progid 是否存在
+                user_choice_progid_Latest = None
+                try:
+                    with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\FileExts\.apk\UserChoiceLatest\ProgId", 0, winreg.KEY_READ) as key:
+                        try:
+                            progid_val, progid_type = winreg.QueryValueEx(key, "ProgId")
+                            user_choice_progid_Latest = progid_val
+                            app_logger.debug(f"找到 UserChoiceLatest Progid: {progid_val}")
+                        except OSError as e:
+                            app_logger.debug(f"UserChoiceLatest 中无 Progid 项: {e}")
+                except OSError as e:
+                    app_logger.debug(f"不存在 UserChoiceLatest 注册表项: {e}")
+                
+                # 根据UserChoiceLatest的Progid是否存在，采用不同的判断逻辑
+                if user_choice_progid_Latest is not None:
+                    # 如果存在Progid，则必须为ApkFile.apkhelper或apk_helper.exe
+                    if user_choice_progid_Latest == "ApkFile.apkhelper" or user_choice_progid_Latest == r"Applications\apk_helper.exe":
+                        app_logger.debug(f"条件2满足2: UserChoiceLatest Progid = {user_choice_progid_Latest}")
+                    else:
+                        condition2 = False
+                        app_logger.debug(f"条件2不满足: UserChoiceLatest Progid = {user_choice_progid_Latest}")
+                        return False
+                else:
+                    goto3 = True
+            
+            condition3 = False if goto3 else True    # 不检查时，默认为True
+            if goto3:
                 # 如果不存在Progid，则检查HKCR\.apk默认键值是否是ApkFile.apkhelper
                 try:
                     with winreg.OpenKey(winreg.HKEY_CLASSES_ROOT, r".apk", 0, winreg.KEY_READ) as key:
                         try:
                             default_val, default_type = winreg.QueryValueEx(key, "")
                             if default_val == "ApkFile.apkhelper":
-                                condition2 = True
-                                app_logger.debug(f"条件2满足: HKCR\\.apk 默认键值 = {default_val}")
+                                condition3 = True
+                                app_logger.debug(f"条件3满足: HKCR\\.apk 默认键值 = {default_val}")
                             else:
-                                app_logger.debug(f"条件2不满足: HKCR\\.apk 默认键值 = {default_val}")
+                                app_logger.debug(f"条件3不满足: HKCR\\.apk 默认键值 = {default_val}")
                         except OSError as e:
-                            app_logger.debug(f"条件2不满足: HKCR\\.apk 无默认键值: {e}")
+                            app_logger.debug(f"条件3不满足: HKCR\\.apk 无默认键值: {e}")
                 except OSError as e:
-                    app_logger.debug(f"条件2不满足: 无法打开 HKCR\\.apk 注册表项: {e}")
+                    app_logger.debug(f"条件3不满足: 无法打开 HKCR\\.apk 注册表项: {e}")
             
-            # 条件1和条件2都满足才算已关联
-            result = condition1 and condition2
-            app_logger.debug(f"检查结果: 条件1={condition1}, 条件2={condition2}, 关联状态={result}")
+            # 所有条件都满足才算已关联
+            result = condition1 and condition2 and condition3
+            app_logger.debug(f"检查结果: 条件1={condition1}, 条件2={condition2}, 条件3={condition3}, 关联状态={result}")
             return result
         except ImportError:
             # 非Windows系统，不支持注册表操作
-            app_logger.info("非Windows系统")
+            app_logger.warning("当前系统不是Windows系统")
             return False
         except Exception as e:
             app_logger.warning(f"检查APK关联状态时出错: {e}")
@@ -9284,12 +9514,14 @@ class ApkHelper(QMainWindow):
             message: 结果消息
             output_content: 脚本输出内容
         """
+        if success:
+            # 刷新文件关联图标，使APK文件图标立即更新
+            refresh_file_association_icon()
+        
         # 关闭执行提示对话框
         self._close_executing_dialog()
         
         if success:
-            # 刷新文件关联图标，使APK文件图标立即更新
-            refresh_file_association_icon()
             QMessageBox.information(self, "成功", message)
         else:
             QMessageBox.warning(self, "提示", message)
@@ -9321,12 +9553,14 @@ class ApkHelper(QMainWindow):
             message: 结果消息
             output_content: 脚本输出内容
         """
+        if success:
+            # 刷新文件关联图标，使APK文件图标立即更新
+            refresh_file_association_icon()
+        
         # 关闭执行提示对话框
         self._close_executing_dialog()
         
         if success:
-            # 刷新文件关联图标，使APK文件图标立即更新
-            refresh_file_association_icon()
             QMessageBox.information(self, "成功", message)
         else:
             QMessageBox.warning(self, "提示", message)
@@ -9334,18 +9568,92 @@ class ApkHelper(QMainWindow):
         # 刷新关联状态显示
         self.update_association_status()
     
-    def check_context_menu(self):
+    def check_msix_installed(self):
         """
-        检查APK文件右键菜单是否已添加。
+        检测MSIX包(ApkHelperContextMenu)是否已安装。
         
-        通过检查Windows注册表中的相关键值来判断右键菜单状态：
-        - HKCR\SystemFileAssociations\.apk\shell\APKHelper
+        通过读取Windows注册表，直接检查MSIX包对应的子键是否存在，
+        判断ApkHelperContextMenu包是否已安装。
+        仅在Windows 11 (build >= 22000) 上进行检测。
+        使用注册表查询替代PowerShell命令，大幅提升检测速度。
+        
+        同一个MSIX包在不同Win11电脑上的注册表子键名称完全一致，
+        由全局变量 MSIX_PACKAGE_REG_NAME 指定，直接检查该子键是否存在即可。
+        
+        仅检测HKCU当前用户注册表路径，判断当前用户是否安装了MSIX包：
+        - HKCU\\...\\AppModel\\Repository\\Packages\\<MSIX_PACKAGE_REG_NAME>
+        
+        注册表路径对应关系：
+        - Python端：本方法检测 HKCU\...\AppModel\Repository\Packages\<MSIX_PACKAGE_REG_NAME>
+        - install.ps1：使用 Add-AppxPackage 安装MSIX包，安装后系统自动创建上述注册表项
+        - uninstall.ps1：使用 Remove-AppxPackage 卸载MSIX包，卸载后系统自动删除上述注册表项
+        - DLL端：ApkHelperContextMenu.dll 读取 HKCR\SystemFileAssociations\.apk\APKHelperEx
+                  （与MSIX安装状态不同，DLL读取的是install.ps1写入的注册表项）
         
         Returns:
-            bool: 已添加右键菜单返回True，否则返回False
+            bool: MSIX包已安装返回True，否则返回False
+        """
+        # 非Win11系统不需要检测MSIX
+        if WINDOWS_BUILD_VERSION < 22000:
+            app_logger.debug("非Win11系统，跳过MSIX检测")
+            return False
+
+        try:
+            # 仅检查HKCU当前用户注册表路径
+            reg_paths = [
+                (winreg.HKEY_CURRENT_USER,
+                 r"Software\Classes\Local Settings\Software\Microsoft\Windows\CurrentVersion\AppModel\Repository\Packages",
+                 "HKCU当前用户安装"),
+            ]
+            
+            for root_key, reg_path, desc in reg_paths:
+                # 拼接完整的子键路径
+                full_path = f"{reg_path}\\{MSIX_PACKAGE_REG_NAME}"
+                # 尝试64位和32位注册表视图
+                for wow64_flag in (winreg.KEY_WOW64_64KEY, winreg.KEY_WOW64_32KEY):
+                    try:
+                        with winreg.OpenKey(root_key, full_path, 0,
+                                            winreg.KEY_READ | wow64_flag) as key:
+                            app_logger.debug(f"检测到已安装的MSIX包({desc}): {MSIX_PACKAGE_REG_NAME}")
+                            return True
+                    except OSError:
+                        # 当前路径不存在，尝试下一个视图
+                        continue
+            
+            app_logger.debug("未检测到已安装的MSIX包")
+            return False
+        except ImportError:
+            # 非Windows系统，不支持winreg模块
+            app_logger.warning("非Windows系统，无法检测MSIX安装状态")
+            return False
+        except Exception as e:
+            app_logger.warning(f"检测MSIX安装状态时出错: {e}")
+            return False
+
+    def check_context_menu(self):
+        """
+        检查APK文件传统右键菜单是否已添加。
+        
+        通过检查Windows注册表中的相关键值来判断传统右键菜单状态：
+        - HKCR\SystemFileAssociations\.apk\shell\APKHelper
+        
+        注意：本方法仅检测传统右键菜单（shell\APKHelper），不检测MSIX新版右键菜单。
+        MSIX新版右键菜单的安装状态由 check_msix_installed() 方法检测。
+        install.ps1安装MSIX后会删除shell\APKHelper以避免重复菜单项，
+        因此安装MSIX后本方法返回False，这是正确行为。
+        
+        注册表路径对应关系：
+        - Python端：本方法检测 HKCR\SystemFileAssociations\.apk\shell\APKHelper
+        - ☆add_menu.bat：写入 shell\APKHelper（含command和Icon子键），同时删除 APKHelperEx
+        - ☆rm_menu.bat：删除 shell\APKHelper
+        - install.ps1：删除 shell\APKHelper（避免新旧菜单重复），写入 APKHelperEx
+        - uninstall.ps1：删除 shell\APKHelper 和 APKHelperEx
+        
+        Returns:
+            bool: 已添加传统右键菜单返回True，否则返回False
         """
         try:
-            # 尝试打开注册表项，如果存在则说明右键菜单已添加
+            # 尝试打开注册表项，如果存在则说明传统右键菜单已添加
             with winreg.OpenKey(winreg.HKEY_CLASSES_ROOT, r"SystemFileAssociations\.apk\shell\APKHelper", 0, winreg.KEY_READ):
                 app_logger.debug("找到 HKCR\\SystemFileAssociations\\.apk\\shell\\APKHelper 注册表项")
                 return True
@@ -9354,7 +9662,7 @@ class ApkHelper(QMainWindow):
             return False
         except ImportError:
             # 非Windows系统，不支持注册表操作
-            app_logger.info("非Windows系统")
+            app_logger.warning("当前系统不是Windows系统")
             return False
         except Exception as e:
             app_logger.warning(f"检查右键菜单状态时出错: {e}")
@@ -9364,23 +9672,64 @@ class ApkHelper(QMainWindow):
         """
         执行添加右键菜单脚本。
         
-        调用外部批处理脚本添加APK文件右键菜单，APK文件右键显示"使用 APK Helper 打开"选项。
+        根据操作系统版本和用户勾选状态，决定添加右键菜单时的操作流程：
+        - Win11 + 勾选兼容新版右键菜单：仅执行install.ps1
+          install.ps1内部流程：安装证书 → 安装MSIX → 写入APKHelperEx注册表 → 删除shell\APKHelper
+        - Win11 + 未勾选兼容新版右键菜单：若MSIX已安装则先卸载MSIX再执行bat，否则直接执行bat
+          ☆add_menu.bat内部流程：写入shell\APKHelper（含command和Icon）→ 删除APKHelperEx
+        - 非Win11：仅执行☆add_menu.bat脚本
+        
         需要管理员权限执行，使用异步方式避免界面卡死。
         """
-        # 显示执行提示
-        self._show_executing_dialog("添加右键菜单", "正在执行添加右键菜单操作...\n\n如果弹出管理员权限确认窗口，请点击\"是\"确认。")
+        # 获取Win11新版右键菜单勾选状态
+        enable_win11_menu = config.get("enable_win11_new_menu", False)
+        if hasattr(self, 'win11_menu_checkbox') and self.win11_menu_checkbox is not None:
+            enable_win11_menu = self.win11_menu_checkbox.isChecked()
         
-        # 创建异步工作线程
-        self._add_menu_worker = ElevatedScriptWorker("☆add_menu.bat", "添加右键菜单", timeout=30)
-        self._add_menu_worker.finished.connect(self._on_add_menu_finished)
-        self._add_menu_worker.start()
+        if WINDOWS_BUILD_VERSION >= 22000 and enable_win11_menu:
+            # Win11 + 勾选兼容新版右键菜单：直接执行install.ps1
+            app_logger.debug("Win11系统，勾选了兼容新版右键菜单，直接执行install.ps1安装")
+            self._show_executing_dialog("添加右键菜单", "正在安装Win11新版右键菜单...\n\n如果弹出管理员权限确认窗口，请点击\"是\"确认。")
+            
+            install_ps1_path = os.path.join(BASE_DIR, "ApkHelperContextMenu", "release", "install.ps1")
+            # 传递InstallPath参数，指向apk_helper.exe所在目录
+            extra_params = f'-InstallPath "{BASE_DIR}"'
+            self._install_msix_worker = ElevatedPs1Worker(install_ps1_path, "安装Win11新版右键菜单", timeout=60, extra_params=extra_params)
+            self._install_msix_worker.finished.connect(self._on_install_msix_finished)
+            self._install_msix_worker.start()
+        elif WINDOWS_BUILD_VERSION >= 22000 and not enable_win11_menu:
+            # Win11 + 未勾选兼容新版右键菜单
+            if self.check_msix_installed():
+                # MSIX已安装，先卸载MSIX，再执行bat
+                app_logger.debug("Win11系统，未勾选兼容新版右键菜单，检测到已安装的MSIX，先卸载再添加传统右键菜单")
+                self._show_executing_dialog("添加右键菜单", "正在卸载Win11新版右键菜单组件...\n\n如果弹出管理员权限确认窗口，请点击\"是\"确认。")
+                
+                uninstall_ps1_path = os.path.join(BASE_DIR, "ApkHelperContextMenu", "release", "uninstall.ps1")
+                self._uninstall_msix_worker = ElevatedPs1Worker(uninstall_ps1_path, "卸载Win11新版右键菜单", timeout=60)
+                self._uninstall_msix_worker.finished.connect(self._on_uninstall_msix_before_add_finished)
+                self._uninstall_msix_worker.start()
+            else:
+                # MSIX未安装，直接执行bat脚本
+                app_logger.debug("Win11系统，未勾选兼容新版右键菜单，直接添加传统右键菜单")
+                self._show_executing_dialog("添加右键菜单", "正在执行添加右键菜单操作...\n\n如果弹出管理员权限确认窗口，请点击\"是\"确认。")
+                
+                self._add_menu_worker = ElevatedScriptWorker("☆add_menu.bat", "添加右键菜单", timeout=30)
+                self._add_menu_worker.finished.connect(self._on_add_menu_finished)
+                self._add_menu_worker.start()
+        else:
+            # 非Win11系统，仅执行bat脚本
+            self._show_executing_dialog("添加右键菜单", "正在执行添加右键菜单操作...\n\n如果弹出管理员权限确认窗口，请点击\"是\"确认。")
+            
+            self._add_menu_worker = ElevatedScriptWorker("☆add_menu.bat", "添加右键菜单", timeout=30)
+            self._add_menu_worker.finished.connect(self._on_add_menu_finished)
+            self._add_menu_worker.start()
     
     def _on_add_menu_finished(self, success, message, output_content):
         """
-        添加右键菜单操作完成回调。
+        添加传统右键菜单bat脚本执行完成回调。
         
         Args:
-            success: 是否成功
+            success: bat脚本是否执行成功
             message: 结果消息
             output_content: 脚本输出内容
         """
@@ -9395,27 +9744,85 @@ class ApkHelper(QMainWindow):
         # 刷新右键菜单状态显示
         self.update_context_menu_status()
     
+    def _on_install_msix_finished(self, success, message, output_content):
+        """
+        MSIX安装完成回调（添加右键菜单时调用）。
+        
+        Args:
+            success: 安装是否成功
+            message: 结果消息
+            output_content: 脚本输出内容
+        """
+        self._close_executing_dialog()
+        
+        if success:
+            QMessageBox.information(self, "成功", message)
+        else:
+            QMessageBox.warning(self, "提示", message)
+        
+        self.update_context_menu_status()
+    
+    def _on_uninstall_msix_before_add_finished(self, success, message, output_content):
+        """
+        添加右键菜单时，先卸载MSIX完成后的回调。
+        
+        卸载MSIX成功后，继续执行bat脚本添加传统右键菜单。
+        
+        Args:
+            success: 卸载是否成功
+            message: 结果消息
+            output_content: 脚本输出内容
+        """
+        if not success:
+            self._close_executing_dialog()
+            QMessageBox.warning(self, "提示", message)
+            self.update_context_menu_status()
+            return
+        
+        # 卸载MSIX成功，继续执行bat脚本添加传统右键菜单
+        app_logger.debug("MSIX卸载成功，继续执行bat脚本添加传统右键菜单")
+        self._show_executing_dialog("添加右键菜单", "Win11新版右键菜单组件已卸载！\n正在添加传统右键菜单...\n\n如果弹出管理员权限确认窗口，请点击\"是\"确认。")
+        
+        self._add_menu_worker = ElevatedScriptWorker("☆add_menu.bat", "添加右键菜单", timeout=30)
+        self._add_menu_worker.finished.connect(self._on_add_menu_finished)
+        self._add_menu_worker.start()
+    
     def remove_context_menu(self):
         """
         执行清除右键菜单脚本。
         
-        调用外部批处理脚本清除APK文件右键菜单。
+        根据操作系统版本，决定清除右键菜单时的操作流程：
+        - Win11：仅执行uninstall.ps1
+          uninstall.ps1内部流程：删除shell\APKHelper → 删除APKHelperEx → 卸载MSIX包
+          无论当前是MSIX新版菜单还是传统菜单，uninstall.ps1都会清理干净
+        - 非Win11：仅执行☆rm_menu.bat脚本
+          ☆rm_menu.bat内部流程：删除shell\APKHelper
+        
         需要管理员权限执行，使用异步方式避免界面卡死。
         """
-        # 显示执行提示
-        self._show_executing_dialog("清除右键菜单", "正在执行清除右键菜单操作...\n\n如果弹出管理员权限确认窗口，请点击\"是\"确认。")
-        
-        # 创建异步工作线程
-        self._remove_menu_worker = ElevatedScriptWorker("☆rm_menu.bat", "清除右键菜单", timeout=30)
-        self._remove_menu_worker.finished.connect(self._on_remove_menu_finished)
-        self._remove_menu_worker.start()
+        if WINDOWS_BUILD_VERSION >= 22000:
+            # Win11系统，直接执行uninstall.ps1
+            app_logger.debug("Win11系统，执行uninstall.ps1清除右键菜单")
+            self._show_executing_dialog("清除右键菜单", "正在执行清除右键菜单操作...\n\n如果弹出管理员权限确认窗口，请点击\"是\"确认。")
+            
+            uninstall_ps1_path = os.path.join(BASE_DIR, "ApkHelperContextMenu", "release", "uninstall.ps1")
+            self._remove_msix_worker = ElevatedPs1Worker(uninstall_ps1_path, "清除右键菜单", timeout=60)
+            self._remove_msix_worker.finished.connect(self._on_remove_msix_finished)
+            self._remove_msix_worker.start()
+        else:
+            # 非Win11系统，仅执行bat脚本
+            self._show_executing_dialog("清除右键菜单", "正在执行清除右键菜单操作...\n\n如果弹出管理员权限确认窗口，请点击\"是\"确认。")
+            
+            self._remove_menu_worker = ElevatedScriptWorker("☆rm_menu.bat", "清除右键菜单", timeout=30)
+            self._remove_menu_worker.finished.connect(self._on_remove_menu_finished)
+            self._remove_menu_worker.start()
     
     def _on_remove_menu_finished(self, success, message, output_content):
         """
-        清除右键菜单操作完成回调。
+        清除传统右键菜单bat脚本执行完成回调。
         
         Args:
-            success: 是否成功
+            success: bat脚本是否执行成功
             message: 结果消息
             output_content: 脚本输出内容
         """
@@ -9428,6 +9835,24 @@ class ApkHelper(QMainWindow):
             QMessageBox.warning(self, "提示", message)
         
         # 刷新右键菜单状态显示
+        self.update_context_menu_status()
+    
+    def _on_remove_msix_finished(self, success, message, output_content):
+        """
+        清除右键菜单时，ps1脚本执行完成回调。
+        
+        Args:
+            success: 卸载是否成功
+            message: 结果消息
+            output_content: 脚本输出内容
+        """
+        self._close_executing_dialog()
+        
+        if success:
+            QMessageBox.information(self, "成功", message)
+        else:
+            QMessageBox.warning(self, "提示", message)
+        
         self.update_context_menu_status()
     
     def _show_executing_dialog(self, title, message):
@@ -9481,16 +9906,47 @@ class ApkHelper(QMainWindow):
             app_logger.debug(f"APK关联状态已刷新: {'已关联' if is_associated else '未关联'}")
     
     def update_context_menu_status(self):
-        """更新右键菜单状态显示 - 检查注册表并更新标签样式"""
+        """
+        更新右键菜单状态显示。
+        
+        根据操作系统版本和安装状态，显示更精确的右键菜单状态信息：
+        - Win11 + 已安装MSIX：显示"已添加Win11新版右键菜单"（MSIX优先判断）
+          对应 check_msix_installed() 检测 HKCU\...\AppModel\Repository\Packages
+        - Win11 + 未安装MSIX但有传统右键菜单：显示"已添加右键菜单"
+          对应 check_context_menu() 检测 HKCR\SystemFileAssociations\.apk\shell\APKHelper
+        - Win11 + 都没有：显示"未添加右键菜单"
+        - 非Win11：仅根据传统右键菜单注册表状态显示
+        
+        状态判断优先级：MSIX安装状态 > 传统菜单注册表状态
+        这是因为install.ps1安装MSIX后会删除shell\APKHelper（避免重复菜单项），
+        所以安装MSIX后check_context_menu()返回False是正确的。
+        """
         has_menu = self.check_context_menu()
         if hasattr(self, 'context_menu_status_label'):
-            if has_menu:
-                self.context_menu_status_label.setText("当前状态：已添加右键菜单")
-                self.context_menu_status_label.setStyleSheet("font-size: 13px; font-weight: bold; padding: 5px; color: green;")
+            if WINDOWS_BUILD_VERSION >= 22000:
+                # Win11系统，结合MSIX安装状态显示
+                has_msix = self.check_msix_installed()
+                if has_msix:
+                    self.context_menu_status_label.setText("当前状态：已添加Win11新版右键菜单")
+                    self.context_menu_status_label.setStyleSheet("font-size: 13px; font-weight: bold; padding: 5px; color: green;")
+                    app_logger.debug("右键菜单状态已刷新: 已添加Win11新版右键菜单")
+                elif has_menu:
+                    self.context_menu_status_label.setText("当前状态：已添加右键菜单")
+                    self.context_menu_status_label.setStyleSheet("font-size: 13px; font-weight: bold; padding: 5px; color: green;")
+                    app_logger.debug("右键菜单状态已刷新: 已添加传统右键菜单")
+                else:
+                    self.context_menu_status_label.setText("当前状态：未添加右键菜单")
+                    self.context_menu_status_label.setStyleSheet("font-size: 13px; font-weight: bold; padding: 5px; color: red;")
+                    app_logger.debug("右键菜单状态已刷新: 未添加右键菜单")
             else:
-                self.context_menu_status_label.setText("当前状态：未添加右键菜单")
-                self.context_menu_status_label.setStyleSheet("font-size: 13px; font-weight: bold; padding: 5px; color: red;")
-            app_logger.debug(f"右键菜单状态已刷新: {'已添加' if has_menu else '未添加'}")
+                # 非Win11系统，仅根据传统右键菜单状态显示
+                if has_menu:
+                    self.context_menu_status_label.setText("当前状态：已添加右键菜单")
+                    self.context_menu_status_label.setStyleSheet("font-size: 13px; font-weight: bold; padding: 5px; color: green;")
+                else:
+                    self.context_menu_status_label.setText("当前状态：未添加右键菜单")
+                    self.context_menu_status_label.setStyleSheet("font-size: 13px; font-weight: bold; padding: 5px; color: red;")
+                app_logger.debug(f"右键菜单状态已刷新: {'已添加' if has_menu else '未添加'}")
     
     def copy_custom_info(self):
         """
@@ -9675,6 +10131,40 @@ class ApkHelper(QMainWindow):
         tip_label.setStyleSheet("color: blue; font-size: 12px;")
         tip_label.setAlignment(Qt.AlignCenter)
         context_menu_layout.addWidget(tip_label)
+        
+        # Win11新版右键菜单选项（仅当build版本号>=22000时显示）
+        # Windows 11 (build >= 22000) 使用新版右键菜单，需要特殊处理
+        if WINDOWS_BUILD_VERSION >= 22000:
+            # 使用水平布局使勾选框居中显示
+            win11_checkbox_layout = QHBoxLayout()
+            win11_checkbox_layout.addStretch()
+            
+            win11_menu_checkbox = QCheckBox("兼容Win11新版右键菜单")
+            win11_menu_checkbox.setToolTip("添加右键菜单时，兼容Windows 11新版右键菜单。\n注意：需要安装msix组件以及对应证书。")
+            win11_menu_checkbox.setChecked(config.get("enable_win11_new_menu", False))
+            win11_checkbox_layout.addWidget(win11_menu_checkbox)
+            
+            win11_checkbox_layout.addStretch()
+            context_menu_layout.addLayout(win11_checkbox_layout)
+            
+            # 保存勾选框的引用，以便后续保存设置
+            self.win11_menu_checkbox = win11_menu_checkbox
+            
+            # 勾选框状态变更时自动保存到配置
+            def on_win11_menu_checkbox_changed(state):
+                """Win11新版右键菜单勾选框状态变更回调"""
+                is_checked = (state == Qt.Checked)
+                config["enable_win11_new_menu"] = is_checked
+                if save_config():
+                    app_logger.info(f"Win11新版右键菜单选项已保存: {'勾选' if is_checked else '取消勾选'}")
+                else:
+                    app_logger.warning("Win11新版右键菜单选项保存失败")
+            
+            win11_menu_checkbox.stateChanged.connect(on_win11_menu_checkbox_changed)
+        else:
+            # 非Win11系统，确保不存在勾选框引用
+            if hasattr(self, 'win11_menu_checkbox'):
+                self.win11_menu_checkbox = None
         
         # 右键菜单操作按钮布局（水平居中排列）
         context_menu_btn_layout = QHBoxLayout()
@@ -11332,6 +11822,15 @@ def main():
     
     # 加载配置文件
     load_config()
+    
+    # 检测Windows系统build版本号
+    global WINDOWS_BUILD_VERSION
+    try:
+        WINDOWS_BUILD_VERSION = sys.getwindowsversion().build
+        app_logger.debug(f"检测到Windows系统build版本号: {WINDOWS_BUILD_VERSION}")
+    except Exception as e:
+        app_logger.warning(f"获取Windows系统build版本号失败: {e}")
+        WINDOWS_BUILD_VERSION = 0
     
     # 应用配置文件中的分隔符设置
     if "row_separator" in config:
