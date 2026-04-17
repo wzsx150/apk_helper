@@ -808,6 +808,7 @@ ANDROID_SYSTEM_COLORS_BY_NAME = {name: (color, res_id) for res_id, (color, name)
 # ============================================================================
 CONFIG_FILE_NAME = "apk_helper_config.json"
 CONFIG_APPDATA_DIR = "apk_helper"
+LOCAL_CONFIG_FILE = "LOCAL_CONFIG"  # 本地配置模式标志文件名，存在此文件表示配置保存在程序目录
 
 DEFAULT_CONFIG = {
     "log_level": "INFO",
@@ -823,29 +824,68 @@ DEFAULT_CONFIG = {
 config = {}
 
 
+def is_local_config_mode():
+    """
+    检查是否使用本地配置模式（配置文件保存在程序目录）。
+    
+    通过检查程序目录下是否存在 LOCAL_CONFIG 标志文件来判断。
+    
+    Returns:
+        bool: True 表示使用本地配置模式，False 表示使用 AppData 配置模式
+    """
+    if 'PRO_DIR' not in globals() or not PRO_DIR:
+        return False
+    
+    local_config_flag = os.path.join(PRO_DIR, LOCAL_CONFIG_FILE)
+    # 确保路径是绝对路径
+    if not os.path.isabs(local_config_flag):
+        return False
+    
+    return os.path.isfile(local_config_flag)
+
+
 def get_config_file_path():
     """
     获取配置文件路径。
     
-    优先返回 AppData 目录下的配置文件路径，如果该目录不存在则返回程序目录下的路径。
+    如果程序目录下存在 LOCAL_CONFIG 文件，则返回程序目录下的配置文件路径。
+    否则返回 AppData 目录下的配置文件路径。
     
     Returns:
-        tuple: (配置文件路径, 是否为AppData目录)
+        tuple: (配置文件路径, 是否为本地配置模式)
+               本地配置模式为 True，AppData 配置模式为 False
+               如果无法确定路径，返回 ("", False)
     """
-    appdata_path = os.path.join(os.environ.get('APPDATA', ''), CONFIG_APPDATA_DIR, CONFIG_FILE_NAME)
-    program_path = os.path.join(PRO_DIR, CONFIG_FILE_NAME) if 'PRO_DIR' in globals() else ""
+    program_path = ""
+    if 'PRO_DIR' in globals() and PRO_DIR:
+        program_path = os.path.join(PRO_DIR, CONFIG_FILE_NAME)
     
+    appdata_path = os.path.join(os.environ.get('APPDATA', ''), CONFIG_APPDATA_DIR, CONFIG_FILE_NAME)
+    
+    # 检查是否使用本地配置模式
+    if is_local_config_mode():
+        app_logger.debug(f"检测到本地配置模式，配置文件路径: {program_path}")
+        return program_path, True
+    
+    # 使用 AppData 配置模式
     if appdata_path and os.path.exists(os.path.dirname(appdata_path)):
-        return appdata_path, True
+        return appdata_path, False
     
     if appdata_path:
         try:
             os.makedirs(os.path.dirname(appdata_path), exist_ok=True)
-            return appdata_path, True
-        except Exception:
-            pass
+            return appdata_path, False
+        except Exception as e:
+            app_logger.warning(f"创建 AppData 配置目录失败: {e}")
     
-    return program_path, False
+    # 如果 AppData 不可用，回退到程序目录
+    if program_path:
+        app_logger.warning("AppData 目录不可用，回退到程序目录")
+        return program_path, True
+    
+    # 如果都不可用，返回空路径
+    app_logger.error("无法确定配置文件路径")
+    return "", False
 
 
 def escape_separator(sep):
@@ -1000,8 +1040,8 @@ def load_config():
     """
     加载配置文件。
     
-    优先从 AppData 目录加载，如果不存在则从程序目录加载。
-    如果都不存在，返回默认配置。
+    根据 LOCAL_CONFIG 标志文件决定从哪个目录加载配置文件。
+    如果配置文件不存在，返回默认配置。
     
     Returns:
         dict: 配置字典
@@ -1011,46 +1051,41 @@ def load_config():
     app_logger.debug("开始加载配置文件...")
     config = DEFAULT_CONFIG.copy()
     
-    config_paths = []
+    # 获取配置文件路径
+    config_path, is_local = get_config_file_path()
     
-    appdata_path = os.path.join(os.environ.get('APPDATA', ''), CONFIG_APPDATA_DIR, CONFIG_FILE_NAME)
-    program_path = os.path.join(PRO_DIR, CONFIG_FILE_NAME)
+    if not config_path:
+        app_logger.warning("无法确定配置文件路径，使用默认配置")
+        return config
     
-    if appdata_path:
-        config_paths.append(appdata_path)
-    if program_path and program_path != appdata_path:
-        config_paths.append(program_path)
+    mode_str = "本地配置模式" if is_local else "AppData配置模式"
+    app_logger.info(f"当前配置模式: {mode_str}")
+    app_logger.debug(f"配置文件路径: {config_path}")
     
-    app_logger.debug(f"配置文件搜索路径: {config_paths}")
-    
-    loaded_path = None
     loaded_count = 0
-    for path in config_paths:
-        if os.path.isfile(path):
-            app_logger.debug(f"发现配置文件: {path}")
-            try:
-                with open(path, 'r', encoding='utf-8') as f:
-                    config_data = json.load(f)
-                app_logger.debug(f"成功读取配置文件内容，共 {len(config_data)} 个配置项")
-                
-                valid, errors = validate_config(config_data)
-                app_logger.debug(f"配置验证结果: {'通过' if valid else '失败'}")
-                if valid:
-                    for key, value in config_data.items():
-                        config[key] = value
-                        app_logger.debug(f"加载配置项: {key} = {value}")
-                        loaded_count += 1
-                    loaded_path = path
-                    break
-                else:
-                    app_logger.warning(f"配置文件验证失败: {path}, 错误: {errors}")
-            except json.JSONDecodeError as e:
-                app_logger.warning(f"配置文件JSON解析失败: {path}, 错误: {e}")
-            except Exception as e:
-                app_logger.warning(f"读取配置文件失败: {path}, 错误: {e}")
+    if os.path.isfile(config_path):
+        app_logger.debug(f"发现配置文件: {config_path}")
+        try:
+            with open(config_path, 'r', encoding='utf-8') as f:
+                config_data = json.load(f)
+            app_logger.debug(f"成功读取配置文件内容，共 {len(config_data)} 个配置项")
+            
+            valid, errors = validate_config(config_data)
+            app_logger.debug(f"配置验证结果: {'通过' if valid else '失败'}")
+            if valid:
+                for key, value in config_data.items():
+                    config[key] = value
+                    app_logger.debug(f"加载配置项: {key} = {value}")
+                    loaded_count += 1
+            else:
+                app_logger.warning(f"配置文件验证失败: {config_path}, 错误: {errors}")
+        except json.JSONDecodeError as e:
+            app_logger.warning(f"配置文件JSON解析失败: {config_path}, 错误: {e}")
+        except Exception as e:
+            app_logger.warning(f"读取配置文件失败: {config_path}, 错误: {e}")
     
-    if loaded_path:
-        app_logger.info(f"配置文件加载完成，共加载 {loaded_count} 个配置项，来源: {loaded_path}")
+    if loaded_count > 0:
+        app_logger.info(f"配置文件加载完成，共加载 {loaded_count} 个配置项，来源: {config_path}")
     else:
         app_logger.debug("未找到有效配置文件，使用默认配置")
     
@@ -1061,7 +1096,7 @@ def save_config():
     """
     保存配置到文件。
     
-    优先保存到 AppData 目录，如果失败则保存到程序目录。
+    根据 LOCAL_CONFIG 标志文件决定保存到哪个目录。
     
     Returns:
         bool: 是否保存成功
@@ -1089,47 +1124,37 @@ def save_config():
         app_logger.warning(f"配置数据验证失败，无法保存: {errors}")
         return False
     
-    appdata_dir = os.path.join(os.environ.get('APPDATA', ''), CONFIG_APPDATA_DIR)
-    appdata_path = os.path.join(appdata_dir, CONFIG_FILE_NAME)
-    program_path = os.path.join(PRO_DIR, CONFIG_FILE_NAME)
+    # 获取配置文件路径
+    config_path, is_local = get_config_file_path()
     
-    app_logger.debug(f"配置保存路径 - AppData: {appdata_path}")
-    app_logger.debug(f"配置保存路径 - 程序目录: {program_path}")
+    if not config_path:
+        app_logger.warning("无法确定配置文件路径，保存失败")
+        return False
+    
+    mode_str = "本地配置模式" if is_local else "AppData配置模式"
+    app_logger.debug(f"当前配置模式: {mode_str}, 配置保存路径: {config_path}")
     
     saved = False
-    saved_path = None
     
-    if appdata_dir:
+    # 确保目录存在
+    config_dir = os.path.dirname(config_path)
+    if config_dir and not os.path.exists(config_dir):
         try:
-            if not os.path.exists(appdata_dir):
-                os.makedirs(appdata_dir, exist_ok=True)
-                app_logger.debug(f"创建配置目录: {appdata_dir}")
-            with open(appdata_path, 'w', encoding='utf-8') as f:
-                json.dump(config_data, f, ensure_ascii=False, indent=2)
-            config = config_data
-            saved = True
-            saved_path = appdata_path
+            os.makedirs(config_dir, exist_ok=True)
+            app_logger.debug(f"创建配置目录: {config_dir}")
         except Exception as e:
-            app_logger.warning(f"保存配置到AppData目录失败: {e}")
+            app_logger.warning(f"创建配置目录失败: {e}")
+            return False
     
-    if not saved and program_path:
-        try:
-            program_dir = os.path.dirname(program_path)
-            if program_dir and not os.path.exists(program_dir):
-                os.makedirs(program_dir, exist_ok=True)
-                app_logger.debug(f"创建配置目录: {program_dir}")
-            with open(program_path, 'w', encoding='utf-8') as f:
-                json.dump(config_data, f, ensure_ascii=False, indent=2)
-            config = config_data
-            saved = True
-            saved_path = program_path
-        except Exception as e:
-            app_logger.warning(f"保存配置到程序目录失败: {e}")
-    
-    if saved and saved_path:
-        app_logger.info(f"配置保存成功，保存路径: {saved_path}")
-    else:
-        app_logger.warning("配置保存失败")
+    # 保存配置文件
+    try:
+        with open(config_path, 'w', encoding='utf-8') as f:
+            json.dump(config_data, f, ensure_ascii=False, indent=2)
+        config = config_data
+        saved = True
+        app_logger.info(f"配置保存成功，保存路径: {config_path}")
+    except Exception as e:
+        app_logger.warning(f"保存配置文件失败: {config_path}, 错误: {e}")
     
     return saved
 
@@ -6820,11 +6845,16 @@ class ElevatedScriptWorker(QThread):
             custom_env["PATH"] = custom_env["PATH"] + f";{x64_system_path}"
             
             # 执行命令
+            # 注意：不使用capture_output=True（即stdout/stderr=PIPE），
+            # 因为MinSudo提权后子进程会继承管道句柄，超时后process.communicate()
+            # 会因管道未关闭而阻塞，导致实际超时时间远大于设定值。
+            # 输出已通过shell重定向(2^>^&1 ^>)写入临时文件，无需管道捕获。
             result = subprocess.run(
                 cmd_str, 
                 shell=True, 
                 text=True, 
-                capture_output=True, 
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
                 timeout=self.timeout,
                 env=custom_env
             )
@@ -6867,13 +6897,9 @@ class ElevatedScriptWorker(QThread):
                 # 执行失败，构建详细的错误信息
                 error_parts = []
                 if result.returncode != 0:
-                    # 注意：由于subprocess.run使用了text=True，stderr已经是字符串，不需要decode
-                    stderr_msg = result.stderr if result.stderr else ""
-                    # 移除Windows多余的\r字符
-                    stderr_msg = stderr_msg.replace("\r\r\n", "\n").replace("\r", "")
+                    # 注意：stdout/stderr已设为DEVNULL，result.stderr为None，
+                    # 错误输出已通过shell重定向写入临时文件，可从output_content获取
                     error_parts.append(f"返回码: {result.returncode}")
-                    if stderr_msg:
-                        error_parts.append(f"错误输出: {stderr_msg}")
                 if not file_exists:
                     error_parts.append("临时输出文件未创建，程序组件可能未正常运行")
                 if not content_not_empty:
@@ -6988,11 +7014,16 @@ class ElevatedPs1Worker(QThread):
             custom_env["PATH"] = custom_env["PATH"] + f";{x64_system_path}"
             
             # 执行命令
+            # 注意：不使用capture_output=True（即stdout/stderr=PIPE），
+            # 因为MinSudo提权后子进程会继承管道句柄，超时后process.communicate()
+            # 会因管道未关闭而阻塞，导致实际超时时间远大于设定值。
+            # PS1脚本输出通过-OutputFile参数写入临时文件，无需管道捕获。
             result = subprocess.run(
                 cmd_str, 
                 shell=True, 
                 text=True, 
-                capture_output=True, 
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
                 timeout=self.timeout,
                 env=custom_env
             )
@@ -7041,13 +7072,9 @@ class ElevatedPs1Worker(QThread):
                 # 执行失败，构建详细的错误信息
                 error_parts = []
                 if result.returncode != 0:
-                    # 注意：由于subprocess.run使用了text=True，stderr已经是字符串，不需要decode
-                    stderr_msg = result.stderr if result.stderr else ""
-                    # 移除Windows多余的\r字符
-                    stderr_msg = stderr_msg.replace("\r\r\n", "\n").replace("\r", "")
+                    # 注意：stdout/stderr已设为DEVNULL，result.stderr为None，
+                    # 错误输出已通过-OutputFile参数写入临时文件，可从output_content获取
                     error_parts.append(f"返回码: {result.returncode}")
-                    if stderr_msg:
-                        error_parts.append(f"错误输出: {stderr_msg}")
                 if not file_exists:
                     error_parts.append("临时输出文件未创建，程序组件可能未正常运行")
                 if not content_not_empty:
@@ -9924,6 +9951,7 @@ class ApkHelper(QMainWindow):
         """
         # 如果已有对话框，先关闭
         if hasattr(self, '_executing_dialog') and self._executing_dialog is not None:
+            self._executing_dialog.hide()
             self._executing_dialog.close()
             self._executing_dialog.deleteLater()
         
@@ -10659,6 +10687,90 @@ class ApkHelper(QMainWindow):
         
         main_tab_widget.addTab(batch_rename_widget, "批量重命名")
         
+        # === 配置信息选项卡 ===
+        config_info_widget = QWidget()
+        config_info_layout = QVBoxLayout(config_info_widget)
+        config_info_layout.setContentsMargins(10, 10, 10, 10)
+        
+        # 配置文件路径显示区域
+        config_path_group = QGroupBox("配置文件路径")
+        config_path_layout = QVBoxLayout(config_path_group)
+        
+        config_path_edit = QLineEdit()
+        config_path_edit.setReadOnly(True)
+        config_path_edit.setToolTip("当前配置文件的保存路径（只读）")
+        # 获取当前配置文件路径（转换为长路径格式）
+        current_config_path, current_is_local = get_config_file_path()
+        display_path = get_long_path(current_config_path) if current_config_path else "未知"
+        config_path_edit.setText(display_path)
+        config_path_layout.addWidget(config_path_edit)
+        
+        config_info_layout.addWidget(config_path_group)
+        
+        # 配置文件内容显示区域
+        config_content_group = QGroupBox("配置文件内容")
+        config_content_layout = QVBoxLayout(config_content_group)
+        
+        config_content_edit = QTextEdit()
+        config_content_edit.setReadOnly(True)
+        config_content_edit.setMaximumHeight(200)
+        config_content_edit.setToolTip("当前配置文件的内容（只读）")
+        # 读取并显示配置文件内容
+        if current_config_path and os.path.isfile(current_config_path):
+            try:
+                with open(current_config_path, 'r', encoding='utf-8') as f:
+                    config_content_edit.setPlainText(f.read())
+            except Exception as e:
+                config_content_edit.setPlainText(f"读取配置文件失败: {e}")
+        else:
+            config_content_edit.setPlainText("配置文件不存在，使用默认配置")
+        config_content_layout.addWidget(config_content_edit)
+        
+        config_info_layout.addWidget(config_content_group)
+        
+        # 本地配置模式选项
+        local_config_group = QGroupBox("配置保存位置")
+        local_config_layout = QVBoxLayout(local_config_group)
+        
+        local_config_checkbox = QCheckBox("将配置文件保存在程序所在目录（便携模式）")
+        local_config_checkbox.setToolTip(
+            "勾选后，配置文件将保存在程序所在目录而非系统AppData目录。\n\n"
+            "说明：\n"
+            "- 勾选此选项并保存后，会在程序目录下创建 LOCAL_CONFIG 标志文件\n"
+            "- 取消勾选并保存后，会删除 LOCAL_CONFIG 标志文件，配置将保存到 AppData 目录\n"
+            "- 此选项适用于便携版或需要将配置与程序放在一起的情况"
+        )
+        local_config_checkbox.setChecked(current_is_local)
+        local_config_layout.addWidget(local_config_checkbox)
+        
+        config_info_layout.addWidget(local_config_group)
+        
+        # 按钮区域
+        config_info_btn_layout = QHBoxLayout()
+        config_info_btn_layout.addStretch()
+        
+        refresh_config_btn = QPushButton("刷新")
+        refresh_config_btn.setFixedWidth(80)
+        refresh_config_btn.setToolTip("刷新配置文件路径和内容显示")
+        config_info_btn_layout.addWidget(refresh_config_btn)
+        
+        reset_all_config_btn = QPushButton("重置所有配置")
+        reset_all_config_btn.setFixedWidth(90)
+        reset_all_config_btn.setToolTip("将所有配置恢复为默认值并保存")
+        config_info_btn_layout.addWidget(reset_all_config_btn)
+        
+        save_config_location_btn = QPushButton("保存设置")
+        save_config_location_btn.setFixedWidth(80)
+        save_config_location_btn.setToolTip("保存配置保存位置设置")
+        config_info_btn_layout.addWidget(save_config_location_btn)
+        
+        config_info_btn_layout.addStretch()
+        config_info_layout.addLayout(config_info_btn_layout)
+        
+        config_info_layout.addStretch()
+        
+        main_tab_widget.addTab(config_info_widget, "配置信息")
+        
         # === 关于选项卡（双层结构） ===
         about_widget = QWidget()
         about_layout = QVBoxLayout(about_widget)
@@ -10766,6 +10878,338 @@ class ApkHelper(QMainWindow):
             if len(format_text) > 200:
                 return False, f"{name}长度不能超过200个字符"
             return True, ""
+        
+        def refresh_config_info():
+            """刷新配置文件路径和内容显示"""
+            current_path, is_local = get_config_file_path()
+            # 转换为长路径格式显示
+            display_path = get_long_path(current_path) if current_path else "未知"
+            config_path_edit.setText(display_path)
+            
+            # 更新复选框状态
+            local_config_checkbox.setChecked(is_local)
+            
+            # 更新配置文件内容
+            if current_path and os.path.isfile(current_path):
+                try:
+                    with open(current_path, 'r', encoding='utf-8') as f:
+                        config_content_edit.setPlainText(f.read())
+                except Exception as e:
+                    config_content_edit.setPlainText(f"读取配置文件失败: {e}")
+            else:
+                config_content_edit.setPlainText("配置文件不存在，使用默认配置")
+            
+            app_logger.debug("配置信息已刷新")
+        
+        def save_config_location():
+            """保存配置保存位置设置"""
+            use_local = local_config_checkbox.isChecked()
+            current_is_local_mode = is_local_config_mode()
+            
+            # 获取 LOCAL_CONFIG 标志文件路径
+            local_config_flag = ""
+            if 'PRO_DIR' in globals() and PRO_DIR:
+                local_config_flag = os.path.join(PRO_DIR, LOCAL_CONFIG_FILE)
+            
+            if use_local:
+                # 用户选择本地配置模式
+                if not local_config_flag or not os.path.isabs(local_config_flag):
+                    QMessageBox.warning(dialog, "警告", "无法确定程序目录，无法使用本地配置模式")
+                    local_config_checkbox.setChecked(current_is_local_mode)
+                    return
+                
+                # 先执行权限设置脚本，获取管理员权限并赋予目录写权限
+                app_logger.info("正在执行程序目录权限设置脚本...")
+                
+                # 获取脚本路径和MinSudo路径
+                script_path = get_long_path(os.path.join(BASE_DIR, "☆file_perm.bat")) if 'BASE_DIR' in globals() else ""
+                sudo_path = get_long_path(os.path.join(BASE_DIR, "MinSudo.exe")) if 'BASE_DIR' in globals() else ""
+                
+                # 检查必要文件是否存在
+                if not script_path or not os.path.exists(script_path):
+                    app_logger.warning(f"权限设置脚本不存在: {script_path}")
+                    # 脚本不存在时询问用户是否继续
+                    reply = QMessageBox.question(
+                        dialog, "提示",
+                        "权限设置脚本不存在，无法自动设置目录权限。\n\n"
+                        "后续可能因为权限问题无法保存配置文件。\n\n"
+                        "是否仍要尝试切换到本地配置模式？",
+                        QMessageBox.Yes | QMessageBox.No,
+                        QMessageBox.No
+                    )
+                    if reply == QMessageBox.No:
+                        local_config_checkbox.setChecked(current_is_local_mode)
+                        return
+                elif not sudo_path or not os.path.exists(sudo_path):
+                    app_logger.warning(f"MinSudo组件不存在: {sudo_path}")
+                    # 组件不存在时询问用户是否继续
+                    reply = QMessageBox.question(
+                        dialog, "提示",
+                        "MinSudo组件不存在，无法自动设置目录权限。\n\n"
+                        "后续可能因为权限问题无法保存配置文件。\n\n"
+                        "是否仍要尝试切换到本地配置模式？",
+                        QMessageBox.Yes | QMessageBox.No,
+                        QMessageBox.No
+                    )
+                    if reply == QMessageBox.No:
+                        local_config_checkbox.setChecked(current_is_local_mode)
+                        return
+                else:
+                    # 显示执行提示
+                    perm_msg = QMessageBox(dialog)
+                    perm_msg.setWindowTitle("权限设置")
+                    perm_msg.setText("正在设置程序目录权限...\n\n如果弹出管理员权限确认窗口，请点击\"是\"确认。")
+                    perm_msg.setStandardButtons(QMessageBox.NoButton)
+                    perm_msg.show()
+                    # 强制刷新界面，确保对话框立即显示
+                    QApplication.processEvents()
+                    
+                    # 使用 QEventLoop 同步等待执行完成
+                    from PyQt5.QtCore import QEventLoop, QTimer
+                    loop = QEventLoop()
+                    
+                    # 安全定时器：防止工作线程异常导致QEventLoop永久阻塞
+                    # 超时时间比worker的30秒多5秒，正常情况下worker会先完成
+                    safety_timer = QTimer()
+                    safety_timer.setSingleShot(True)
+                    safety_timer.timeout.connect(loop.quit)
+                    safety_timer.start(35000)
+                    
+                    perm_worker = ElevatedScriptWorker("☆file_perm.bat", "设置目录权限", timeout=30)
+                    perm_result = {'success': False, 'message': '', 'output': ''}
+                    worker_finished_flag = [False]
+                    
+                    def on_perm_finished(success, message, output):
+                        """工作线程完成回调"""
+                        worker_finished_flag[0] = True
+                        perm_result['success'] = success
+                        perm_result['message'] = message
+                        perm_result['output'] = output
+                        safety_timer.stop()
+                        loop.quit()
+                    
+                    perm_worker.finished.connect(on_perm_finished)
+                    perm_worker.start()
+                    
+                    # 等待执行完成
+                    loop.exec_()
+                    
+                    # 停止安全定时器（如果仍在运行）
+                    safety_timer.stop()
+                    
+                    # 检查是否因安全定时器超时退出（工作线程未正常完成）
+                    if not worker_finished_flag[0]:
+                        app_logger.warning("权限设置工作线程未在预期时间内完成，可能已超时")
+                        perm_result['success'] = False
+                        perm_result['message'] = "权限设置操作超时，工作线程未在预期时间内完成"
+                    
+                    # 关闭提示对话框（检查对象是否仍有效，防止父对话框已关闭导致崩溃）
+                    # 注意：必须先调用hide()再调用close()，否则在Windows上close()可能不会立即
+                    # 从屏幕上移除窗口，导致后续弹出的对话框下方仍能看到此提示窗口
+                    try:
+                        from sip import isdeleted
+                        if not isdeleted(perm_msg):
+                            perm_msg.hide()
+                            perm_msg.close()
+                            perm_msg.deleteLater()
+                    except ImportError:
+                        perm_msg.hide()
+                        perm_msg.close()
+                        perm_msg.deleteLater()
+                    except RuntimeError:
+                        pass  # 对象已被Qt销毁，忽略
+                    # 强制刷新界面，确保对话框立即关闭
+                    QApplication.processEvents()
+                    
+                    if not perm_result['success']:
+                        app_logger.warning(f"程序目录权限设置失败: {perm_result['message']}")
+                        # 权限设置失败时询问用户是否继续
+                        reply = QMessageBox.question(
+                            dialog, "提示",
+                            f"程序目录权限设置失败，可能无法写入配置文件。\n\n"
+                            f"错误信息：{perm_result['message']}\n\n"
+                            "是否仍要尝试切换到本地配置模式？",
+                            QMessageBox.Yes | QMessageBox.No,
+                            QMessageBox.No
+                        )
+                        if reply == QMessageBox.No:
+                            local_config_checkbox.setChecked(current_is_local_mode)
+                            return
+                    else:
+                        app_logger.info("程序目录权限设置成功")
+                        # 权限设置成功，直接继续执行后续步骤，不需要额外提示
+                
+                # 创建 LOCAL_CONFIG 标志文件，使 save_config 使用程序目录
+                try:
+                    with open(local_config_flag, 'w', encoding='utf-8') as f:
+                        f.write("")  # 创建空文件
+                    app_logger.info(f"已创建本地配置标志文件: {local_config_flag}")
+                except Exception as e:
+                    error_msg = (
+                        f"创建 LOCAL_CONFIG 文件失败: {e}\n\n"
+                        "可能的原因：\n"
+                        "- 程序所在目录没有写入权限\n"
+                        "- 磁盘空间不足\n"
+                        "- 杀毒软件拦截\n\n"
+                        "建议：将程序移动到有写入权限的目录。"
+                    )
+                    QMessageBox.warning(dialog, "警告", error_msg)
+                    local_config_checkbox.setChecked(current_is_local_mode)
+                    return
+                
+                # 保存配置到程序目录
+                if save_config():
+                    QMessageBox.information(dialog, "成功", "已切换到本地配置模式，配置文件将保存在程序所在目录")
+                    refresh_config_info()
+                else:
+                    # 保存失败，删除 LOCAL_CONFIG 标志文件，恢复之前的状态
+                    try:
+                        os.remove(local_config_flag)
+                        app_logger.info(f"配置保存失败，已删除本地配置标志文件: {local_config_flag}")
+                    except Exception as e:
+                        app_logger.warning(f"删除 LOCAL_CONFIG 文件失败: {e}")
+                    error_msg = (
+                        "配置文件保存失败，已恢复到之前的配置模式。\n\n"
+                        "可能的原因：\n"
+                        "- 程序所在目录没有写入权限\n"
+                        "- 磁盘空间不足\n"
+                        "- 配置文件被其他程序占用\n\n"
+                        "建议：将程序移动到有写入权限的目录。"
+                    )
+                    QMessageBox.warning(dialog, "警告", error_msg)
+            else:
+                # 用户选择 AppData 配置模式
+                # 先删除 LOCAL_CONFIG 标志文件，使 save_config 使用 AppData 目录
+                local_config_existed = False
+                if current_is_local_mode and local_config_flag and os.path.isabs(local_config_flag):
+                    local_config_existed = os.path.isfile(local_config_flag)
+                    if local_config_existed:
+                        try:
+                            os.remove(local_config_flag)
+                            app_logger.info(f"已删除本地配置标志文件: {local_config_flag}")
+                        except Exception as e:
+                            app_logger.warning(f"删除 LOCAL_CONFIG 文件失败: {e}")
+                            # 删除失败时无法切换到AppData模式，中止操作
+                            QMessageBox.warning(dialog, "警告",
+                                f"无法删除本地配置标志文件，无法切换到 AppData 配置模式。\n\n"
+                                f"错误信息：{e}")
+                            local_config_checkbox.setChecked(True)
+                            return
+                
+                # 保存配置到 AppData 目录
+                if save_config():
+                    QMessageBox.information(dialog, "成功", "已切换到 AppData 配置模式，配置文件将保存在系统AppData目录")
+                    refresh_config_info()
+                else:
+                    # 保存失败，恢复 LOCAL_CONFIG 标志文件
+                    if local_config_existed:
+                        try:
+                            with open(local_config_flag, 'w', encoding='utf-8') as f:
+                                f.write("")
+                            app_logger.info(f"配置保存失败，已恢复本地配置标志文件: {local_config_flag}")
+                        except Exception as e:
+                            app_logger.warning(f"恢复 LOCAL_CONFIG 文件失败: {e}")
+                    error_msg = (
+                        "配置文件保存失败，已恢复到之前的配置模式。\n\n"
+                        "可能的原因：\n"
+                        "- AppData 目录没有写入权限\n"
+                        "- 磁盘空间不足\n"
+                        "- 配置文件被其他程序占用\n\n"
+                        "建议：检查 AppData 目录权限，或使用本地配置模式。"
+                    )
+                    QMessageBox.warning(dialog, "警告", error_msg)
+        
+        def reset_all_config():
+            """重置所有配置为默认值"""
+            # 弹出确认对话框
+            reply = QMessageBox.question(
+                dialog, "确认重置",
+                "确定要将所有配置恢复为默认值吗？\n\n"
+                "注意：配置保存位置（本地/AppData）不会被改变。",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No
+            )
+            
+            if reply == QMessageBox.Yes:
+                # 重置全局配置为默认值
+                global config
+                config = DEFAULT_CONFIG.copy()
+                
+                # 重置日志级别
+                set_log_level(DEFAULT_CONFIG["log_level"])
+                
+                # 重置分隔符
+                CustomTableWidget.row_separator = unescape_separator(DEFAULT_CONFIG["row_separator"])
+                CustomTableWidget.col_separator = unescape_separator(DEFAULT_CONFIG["col_separator"])
+                
+                # 保存配置到文件
+                if save_config():
+                    app_logger.info("所有配置已重置为默认值")
+                    
+                    # 更新所有设置界面控件的值
+                    # 1. 复制自定义信息格式
+                    copy_format_edit.setText(DEFAULT_CONFIG["copy_custom_format"])
+                    copy_no_popup_checkbox.setChecked(DEFAULT_CONFIG["copy_custom_no_popup"])
+                    
+                    # 2. 批量重命名格式
+                    rename_format_edit.setText(DEFAULT_CONFIG["rename_format"])
+                    include_subdir_checkbox.setChecked(DEFAULT_CONFIG["rename_include_subdir"])
+                    
+                    # 3. 分隔符
+                    default_row_sep = unescape_separator(DEFAULT_CONFIG["row_separator"])
+                    default_col_sep = unescape_separator(DEFAULT_CONFIG["col_separator"])
+                    
+                    # 更新行间分隔符下拉框
+                    found_row = False
+                    for i in range(row_sep_combo.count() - 1):
+                        if row_sep_combo.itemData(i) == default_row_sep:
+                            row_sep_combo.setCurrentIndex(i)
+                            found_row = True
+                            break
+                    if not found_row:
+                        row_sep_combo.setCurrentIndex(row_sep_combo.count() - 1)
+                        row_sep_custom.setText(default_row_sep)
+                    
+                    # 更新列间隔符下拉框
+                    found_col = False
+                    for i in range(col_sep_combo.count() - 1):
+                        if col_sep_combo.itemData(i) == default_col_sep:
+                            col_sep_combo.setCurrentIndex(i)
+                            found_col = True
+                            break
+                    if not found_col:
+                        col_sep_combo.setCurrentIndex(col_sep_combo.count() - 1)
+                        col_sep_custom.setText(default_col_sep)
+                    
+                    # 4. 日志级别
+                    log_level_combo.setCurrentText(DEFAULT_CONFIG["log_level"])
+                    
+                    # 5. Win11新版右键菜单选项（仅在Win11系统上存在此控件）
+                    if WINDOWS_BUILD_VERSION >= 22000:
+                        try:
+                            win11_menu_checkbox.setChecked(DEFAULT_CONFIG["enable_win11_new_menu"])
+                        except NameError:
+                            pass  # 控件不存在时忽略
+                    
+                    # 6. 刷新配置信息选项卡
+                    refresh_config_info()
+                    
+                    QMessageBox.information(dialog, "成功", "所有配置已重置为默认值并保存")
+                else:
+                    QMessageBox.warning(dialog, "警告", "配置保存失败，重置未生效")
+        
+        refresh_config_btn.clicked.connect(refresh_config_info)
+        reset_all_config_btn.clicked.connect(reset_all_config)
+        save_config_location_btn.clicked.connect(save_config_location)
+        
+        # 切换到配置信息选项卡时自动刷新
+        def on_main_tab_changed(index):
+            """主选项卡切换事件处理"""
+            # 配置信息选项卡的索引为2（设置=0, 批量重命名=1, 配置信息=2, 关于=3）
+            if index == 2:
+                refresh_config_info()
+        
+        main_tab_widget.currentChanged.connect(on_main_tab_changed)
         
         def select_batch_dir():
             """选择批量重命名目录"""
