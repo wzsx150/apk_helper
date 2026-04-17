@@ -163,6 +163,8 @@ android.graphics.drawable  |  API reference  |  Android Developers  https://deve
 
 
 
+非常感谢 @MouriNaruto 的MinSudo工具，库链接如下：
+
 M2Team/NanaRun: Application runtime environment customization utility  https://github.com/M2Team/NanaRun
 
 
