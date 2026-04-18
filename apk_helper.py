@@ -844,6 +844,7 @@ DEFAULT_CONFIG = {
     "copy_custom_no_popup": False,  # 复制自定义信息后是否不弹框提示
     "rename_format": "{app_name}_{version_name}",
     "rename_include_subdir": False,
+    "rename_auto_number": False,  # 重复文件名自动添加编号
     "enable_win11_new_menu": False
 }
 
@@ -1046,6 +1047,13 @@ def validate_config(config_data):
         else:
             app_logger.debug(f"配置项验证 - rename_include_subdir: 有效 ({config_data['rename_include_subdir']})")
     
+    if "rename_auto_number" in config_data:
+        if not isinstance(config_data["rename_auto_number"], bool):
+            errors.append("重复文件名自动添加编号选项必须是布尔值")
+            app_logger.debug("配置项验证 - rename_auto_number: 类型错误")
+        else:
+            app_logger.debug(f"配置项验证 - rename_auto_number: 有效 ({config_data['rename_auto_number']})")
+    
     if "enable_win11_new_menu" in config_data:
         if not isinstance(config_data["enable_win11_new_menu"], bool):
             errors.append("Win11新版右键菜单选项必须是布尔值")
@@ -1139,6 +1147,7 @@ def save_config():
         "copy_custom_no_popup": config.get("copy_custom_no_popup", DEFAULT_CONFIG["copy_custom_no_popup"]),
         "rename_format": config.get("rename_format", DEFAULT_CONFIG["rename_format"]),
         "rename_include_subdir": config.get("rename_include_subdir", DEFAULT_CONFIG["rename_include_subdir"]),
+        "rename_auto_number": config.get("rename_auto_number", DEFAULT_CONFIG["rename_auto_number"]),
         "enable_win11_new_menu": config.get("enable_win11_new_menu", DEFAULT_CONFIG["enable_win11_new_menu"])
     }
     
@@ -6668,23 +6677,26 @@ class BatchRenameWorker(QThread):
     Attributes:
         apk_files: APK文件路径列表
         rename_format: 重命名格式模板
+        auto_number: 重复文件名是否自动添加编号
         stop_flag: 停止标志，用于中断操作
     """
     progress_update = pyqtSignal(int, int, str)
     file_processed = pyqtSignal(str, str, str)
     finished = pyqtSignal(list, int, int, int)
     
-    def __init__(self, apk_files, rename_format):
+    def __init__(self, apk_files, rename_format, auto_number=False):
         """
         初始化批量重命名工作线程。
         
         Args:
             apk_files: APK文件路径列表
             rename_format: 重命名格式模板
+            auto_number: 重复文件名是否自动添加编号，默认False
         """
         super().__init__()
         self.apk_files = apk_files
         self.rename_format = rename_format
+        self.auto_number = auto_number
         self.stop_flag = False
     
     def run(self):
@@ -6693,6 +6705,7 @@ class BatchRenameWorker(QThread):
         
         遍历APK文件列表，获取每个文件的基本信息，
         根据格式模板生成新文件名，执行重命名操作。
+        如果auto_number为True且目标文件名重复，则自动添加编号后缀。
         """
         success_count = 0
         fail_count = 0
@@ -6701,7 +6714,7 @@ class BatchRenameWorker(QThread):
         invalid_chars = ['\\', '/', ':', '*', '?', '"', '<', '>', '|']
         
         total = len(self.apk_files)
-        app_logger.info(f"开始批量重命名，共 {total} 个文件")
+        app_logger.info(f"开始批量重命名，共 {total} 个文件, 自动编号: {self.auto_number}")
         
         for i, apk_path in enumerate(self.apk_files):
             if self.stop_flag:
@@ -6759,6 +6772,10 @@ class BatchRenameWorker(QThread):
                 new_name = new_name + ".apk"
                 new_path = os.path.join(os.path.dirname(apk_path), new_name)
                 
+                # 初始化自动编号相关变量
+                auto_numbered = False
+                original_target = None
+                
                 if apk_path == new_path:
                     skip_count += 1
                     msg = f"跳过: {filename} (文件名相同)"
@@ -6768,19 +6785,74 @@ class BatchRenameWorker(QThread):
                     continue
                 
                 if os.path.exists(new_path):
-                    fail_count += 1
-                    msg = f"失败: {filename} - 目标文件已存在"
-                    result_messages.append(msg)
-                    self.file_processed.emit(filename, "失败", "目标文件已存在")
-                    app_logger.warning(f"重命名失败（目标文件已存在）: {filename} -> {new_name}")
-                    continue
+                    if self.auto_number:
+                        # 自动添加编号以避免文件名重复
+                        base_name = new_name[:-4]  # 去除.apk扩展名
+                        dir_name = os.path.dirname(apk_path)
+                        found_unique = False
+                        should_skip = False
+                        number = 1
+                        original_target = new_name  # 保存原始目标文件名
+                        
+                        while number <= 9999:
+                            numbered_name = f"{base_name}_{number:02d}.apk"
+                            numbered_path = os.path.join(dir_name, numbered_name)
+                            
+                            # 如果编号后的路径与源文件相同，视为跳过
+                            if numbered_path == apk_path:
+                                skip_count += 1
+                                msg = f"跳过: {filename} (自动编号后文件名相同)"
+                                result_messages.append(msg)
+                                self.file_processed.emit(filename, "跳过", "自动编号后文件名相同")
+                                app_logger.debug(f"跳过重命名（自动编号后文件名相同）: {filename}")
+                                should_skip = True
+                                break
+                            
+                            # 检查编号后的文件名是否已存在
+                            if not os.path.exists(numbered_path):
+                                new_name = numbered_name
+                                new_path = numbered_path
+                                found_unique = True
+                                auto_numbered = True  # 标记使用了自动编号
+                                app_logger.debug(f"自动编号: {filename} -> {new_name}")
+                                break
+                            
+                            number += 1
+                        
+                        # 编号后与源文件名相同，跳过该文件
+                        if should_skip:
+                            continue
+                        
+                        if not found_unique:
+                            # 编号超过上限，无法找到唯一文件名
+                            fail_count += 1
+                            msg = f"失败: {filename} - 无法生成唯一文件名（编号已超过上限）"
+                            result_messages.append(msg)
+                            self.file_processed.emit(filename, "失败", "无法生成唯一文件名（编号已超过上限）")
+                            app_logger.warning(f"重命名失败（自动编号超过上限）: {filename}")
+                            continue
+                    else:
+                        # 不自动编号，目标文件已存在则重命名失败
+                        fail_count += 1
+                        msg = f"失败: {filename} - 目标文件已存在"
+                        result_messages.append(msg)
+                        self.file_processed.emit(filename, "失败", "目标文件已存在")
+                        app_logger.warning(f"重命名失败（目标文件已存在）: {filename} -> {new_name}")
+                        continue
                 
                 os.rename(apk_path, new_path)
                 success_count += 1
-                msg = f"成功: {filename} -> {new_name}"
-                result_messages.append(msg)
-                self.file_processed.emit(filename, "成功", f"-> {new_name}")
-                app_logger.debug(f"重命名成功: {filename} -> {new_name}")
+                # 如果使用了自动编号，显示额外提示
+                if auto_numbered:
+                    msg = f"成功: {filename} -> {new_name} (自动编号，原目标名 {original_target} 已存在)"
+                    result_messages.append(msg)
+                    self.file_processed.emit(filename, "成功", f"-> {new_name} (自动编号)")
+                    app_logger.debug(f"重命名成功（自动编号）: {filename} -> {new_name}")
+                else:
+                    msg = f"成功: {filename} -> {new_name}"
+                    result_messages.append(msg)
+                    self.file_processed.emit(filename, "成功", f"-> {new_name}")
+                    app_logger.debug(f"重命名成功: {filename} -> {new_name}")
                 
             except Exception as e:
                 fail_count += 1
@@ -10677,6 +10749,18 @@ class ApkHelper(QMainWindow):
         include_subdir_checkbox.setChecked(config.get("rename_include_subdir", DEFAULT_CONFIG["rename_include_subdir"]))
         batch_rename_group_layout.addWidget(include_subdir_checkbox)
         
+        auto_number_checkbox = QCheckBox("重复文件名自动添加编号")
+        auto_number_checkbox.setChecked(config.get("rename_auto_number", DEFAULT_CONFIG["rename_auto_number"]))
+        auto_number_checkbox.setToolTip(
+            "勾选后，批量重命名时如果目标文件名重复，将自动添加编号后缀以避免冲突。\n\n"
+            "编号规则：\n"
+            "- 在文件名末尾（扩展名前）添加 _编号\n"
+            "- 编号起始为两位数字（如 _01），超过两位时自动扩展（如 _100）\n"
+            "- 例如：app_1.0.apk → app_1.0_01.apk, app_1.0_02.apk\n\n"
+            "不勾选时，如果目标文件名已存在，则该文件重命名失败。"
+        )
+        batch_rename_group_layout.addWidget(auto_number_checkbox)
+        
         batch_rename_layout.addWidget(batch_rename_group)
         
         # 批量重命名按钮布局（居中）
@@ -11171,6 +11255,7 @@ class ApkHelper(QMainWindow):
                     # 2. 批量重命名格式
                     rename_format_edit.setText(DEFAULT_CONFIG["rename_format"])
                     include_subdir_checkbox.setChecked(DEFAULT_CONFIG["rename_include_subdir"])
+                    auto_number_checkbox.setChecked(DEFAULT_CONFIG["rename_auto_number"])
                     
                     # 3. 分隔符
                     default_row_sep = unescape_separator(DEFAULT_CONFIG["row_separator"])
@@ -11232,6 +11317,8 @@ class ApkHelper(QMainWindow):
             """选择批量重命名目录"""
             dir_path = QFileDialog.getExistingDirectory(dialog, "选择目录", "")
             if dir_path:
+                # 转换为Windows风格的路径分隔符
+                dir_path = os.path.normpath(dir_path)
                 batch_dir_edit.setText(dir_path)
         
         batch_dir_btn.clicked.connect(select_batch_dir)
@@ -11281,6 +11368,7 @@ class ApkHelper(QMainWindow):
                 return
             
             include_subdir = include_subdir_checkbox.isChecked()
+            auto_number = auto_number_checkbox.isChecked()
             
             apk_files = []
             if include_subdir:
@@ -11297,7 +11385,7 @@ class ApkHelper(QMainWindow):
                 QMessageBox.information(dialog, "提示", "未找到APK文件")
                 return
             
-            app_logger.info(f"开始批量重命名，目录: {dir_path}, 文件数: {len(apk_files)}, 包含子目录: {include_subdir}")
+            app_logger.info(f"开始批量重命名，目录: {dir_path}, 文件数: {len(apk_files)}, 包含子目录: {include_subdir}, 自动编号: {auto_number}")
             
             progress_dialog = QDialog(dialog)
             progress_dialog.setWindowTitle("批量重命名")
@@ -11348,7 +11436,7 @@ class ApkHelper(QMainWindow):
                 cancel_btn.setEnabled(True)
                 app_logger.info(f"批量重命名完成，成功: {success}, 失败: {fail}, 跳过: {skip}")
             
-            worker = BatchRenameWorker(apk_files, rename_format)
+            worker = BatchRenameWorker(apk_files, rename_format, auto_number)
             worker.progress_update.connect(update_progress)
             worker.file_processed.connect(on_file_processed)
             worker.finished.connect(on_finished)
@@ -11409,8 +11497,9 @@ class ApkHelper(QMainWindow):
                 return
             config["rename_format"] = rename_format
             config["rename_include_subdir"] = include_subdir_checkbox.isChecked()
+            config["rename_auto_number"] = auto_number_checkbox.isChecked()
             if save_config():
-                app_logger.info(f"批量重命名设置已保存: {rename_format}")
+                app_logger.info(f"批量重命名设置已保存: {rename_format}, 自动编号: {auto_number_checkbox.isChecked()}")
                 QMessageBox.information(dialog, "成功", "批量重命名设置已保存")
             else:
                 QMessageBox.warning(dialog, "警告", "配置保存失败")
@@ -11419,6 +11508,7 @@ class ApkHelper(QMainWindow):
             """恢复批量重命名设置默认值"""
             rename_format_edit.setText(DEFAULT_CONFIG["rename_format"])
             include_subdir_checkbox.setChecked(DEFAULT_CONFIG["rename_include_subdir"])
+            auto_number_checkbox.setChecked(DEFAULT_CONFIG["rename_auto_number"])
             app_logger.debug("批量重命名设置已恢复默认值")
         
         batch_rename_save_btn.clicked.connect(save_batch_rename_settings)
