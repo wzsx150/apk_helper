@@ -7824,7 +7824,7 @@ class ApkHelper(QMainWindow):
         # 定义程序版本信息
         self.version = b_ver
         self.setWindowTitle(f"APK文件信息解析工具-APK Helper {self.version}")
-        self.setGeometry(100, 100, 400, 560)  # 整个主窗口尺寸(左距离, 上距离, 宽度, 高度)，
+        self.setGeometry(100, 100, 400, 540)  # 整个主窗口尺寸(左距离, 上距离, 宽度, 高度)，
         
         # 让窗口显示在屏幕中心
         self.center_window()
@@ -8854,7 +8854,7 @@ class ApkHelper(QMainWindow):
         
         # 根据应用基本信息表格的高度，更新调整整个主窗口中几个显示区域的比例，目的就是为了让应用信息刚好显示完整（不会显示竖向滚动条）
         height = self.main_splitter.height()  # 主窗口的高度
-        app_info_sh = int(1000 * (total_height+12) / height)  # 多增加一定数量的像素作为区域框额外的高度。这样换算出来实际像素对应的高度比例值
+        app_info_sh = int(1000 * (total_height+24) / height)  # 多增加一定数量的像素作为区域框额外的高度。这样换算出来实际像素对应的高度比例值
         # app_logger.debug(f"main_splitter高度={height}像素, app_info_table高度比例值={app_info_sh}")
         self.main_splitter.setSizes([164, app_info_sh, 700-app_info_sh, 136])  # 图标区域固定，动态调整应用信息、签名信息区域，最后文件信息固定。最终按比例分摊各区域。
 
@@ -9986,10 +9986,10 @@ class ApkHelper(QMainWindow):
         if hasattr(self, 'association_status_label'):
             if is_associated:
                 self.association_status_label.setText("当前状态：已关联APK文件")
-                self.association_status_label.setStyleSheet("font-size: 13px; font-weight: bold; padding: 5px; color: green;")
+                self.association_status_label.setStyleSheet("font-size: 10pt; font-weight: bold; padding: 4px; color: green;")
             else:
                 self.association_status_label.setText("当前状态：未关联APK文件")
-                self.association_status_label.setStyleSheet("font-size: 13px; font-weight: bold; padding: 5px; color: red;")
+                self.association_status_label.setStyleSheet("font-size: 10pt; font-weight: bold; padding: 4px; color: red;")
             app_logger.debug(f"APK关联状态已刷新: {'已关联' if is_associated else '未关联'}")
     
     def update_context_menu_status(self):
@@ -10009,30 +10009,32 @@ class ApkHelper(QMainWindow):
         所以安装MSIX后check_context_menu()返回False是正确的。
         """
         has_menu = self.check_context_menu()
+        menu_font_green = "font-size: 10pt; font-weight: bold; padding: 4px; color: green;"
+        menu_font_red = "font-size: 10pt; font-weight: bold; padding: 4px; color: red;"
         if hasattr(self, 'context_menu_status_label'):
             if WINDOWS_BUILD_VERSION >= 22000:
                 # Win11系统，结合MSIX安装状态显示
                 has_msix = self.check_msix_installed()
                 if has_msix:
                     self.context_menu_status_label.setText("当前状态：已添加Win11新版右键菜单")
-                    self.context_menu_status_label.setStyleSheet("font-size: 13px; font-weight: bold; padding: 5px; color: green;")
+                    self.context_menu_status_label.setStyleSheet(menu_font_green)
                     app_logger.debug("右键菜单状态已刷新: 已添加Win11新版右键菜单")
                 elif has_menu:
                     self.context_menu_status_label.setText("当前状态：已添加右键菜单")
-                    self.context_menu_status_label.setStyleSheet("font-size: 13px; font-weight: bold; padding: 5px; color: green;")
+                    self.context_menu_status_label.setStyleSheet(menu_font_green)
                     app_logger.debug("右键菜单状态已刷新: 已添加传统右键菜单")
                 else:
                     self.context_menu_status_label.setText("当前状态：未添加右键菜单")
-                    self.context_menu_status_label.setStyleSheet("font-size: 13px; font-weight: bold; padding: 5px; color: red;")
+                    self.context_menu_status_label.setStyleSheet(menu_font_red)
                     app_logger.debug("右键菜单状态已刷新: 未添加右键菜单")
             else:
                 # 非Win11系统，仅根据传统右键菜单状态显示
                 if has_menu:
                     self.context_menu_status_label.setText("当前状态：已添加右键菜单")
-                    self.context_menu_status_label.setStyleSheet("font-size: 13px; font-weight: bold; padding: 5px; color: green;")
+                    self.context_menu_status_label.setStyleSheet(menu_font_green)
                 else:
                     self.context_menu_status_label.setText("当前状态：未添加右键菜单")
-                    self.context_menu_status_label.setStyleSheet("font-size: 13px; font-weight: bold; padding: 5px; color: red;")
+                    self.context_menu_status_label.setStyleSheet(menu_font_red)
                 app_logger.debug(f"右键菜单状态已刷新: {'已添加' if has_menu else '未添加'}")
     
     def copy_custom_info(self):
@@ -10136,7 +10138,8 @@ class ApkHelper(QMainWindow):
         # 关联状态显示标签 - 显示当前APK文件关联状态
         self.association_status_label = QLabel()
         self.association_status_label.setAlignment(Qt.AlignCenter)
-        self.association_status_label.setStyleSheet("font-size: 13px; font-weight: bold; padding: 5px;")
+        self.association_status_label.setStyleSheet("font-size: 10pt; font-weight: bold; padding: 4px;")
+        self.association_status_label.setMinimumHeight(20)
         
         # 初始化时更新状态显示
         self.update_association_status()
@@ -10150,7 +10153,7 @@ class ApkHelper(QMainWindow):
         
         # 提示文字（放在按钮上方，居中）
         tip_label = QLabel("提示: 需要管理员权限才能成功执行")
-        tip_label.setStyleSheet("color: blue; font-size: 12px;")
+        tip_label.setStyleSheet("color: blue;")
         tip_label.setAlignment(Qt.AlignCenter)
         apk_association_layout.addWidget(tip_label)
         
@@ -10205,7 +10208,8 @@ class ApkHelper(QMainWindow):
         # 右键菜单状态显示标签 - 显示当前右键菜单是否已添加
         self.context_menu_status_label = QLabel()
         self.context_menu_status_label.setAlignment(Qt.AlignCenter)
-        self.context_menu_status_label.setStyleSheet("font-size: 13px; font-weight: bold; padding: 5px;")
+        self.context_menu_status_label.setStyleSheet("font-size: 10pt; font-weight: bold; padding: 4px;")
+        self.context_menu_status_label.setMinimumHeight(20)
         
         # 初始化时更新状态显示
         self.update_context_menu_status()
@@ -10219,7 +10223,7 @@ class ApkHelper(QMainWindow):
         
         # 提示文字（放在按钮上方，居中）
         tip_label = QLabel("提示: 需要管理员权限才能成功执行")
-        tip_label.setStyleSheet("color: blue; font-size: 12px;")
+        tip_label.setStyleSheet("color: blue;")
         tip_label.setAlignment(Qt.AlignCenter)
         context_menu_layout.addWidget(tip_label)
         
@@ -10340,7 +10344,6 @@ class ApkHelper(QMainWindow):
         copy_custom_layout.addWidget(copy_params_text)
         
         escape_label = QLabel("支持转义字符：\\n(换行) \\t(制表符) \\\\(反斜杠)")
-        escape_label.setStyleSheet("font-size: 11px;")
         copy_custom_layout.addWidget(escape_label)
         
         copy_format_group = QGroupBox("格式模板")
@@ -10628,7 +10631,6 @@ class ApkHelper(QMainWindow):
         batch_rename_group_layout.addWidget(batch_rename_params_text)
         
         notice_label = QLabel("注意：文件名不能包含非法字符 \\ / : * ? \" < > |")
-        notice_label.setStyleSheet("font-size: 11px;")
         batch_rename_group_layout.addWidget(notice_label)
         
         dir_select_layout = QHBoxLayout()
@@ -10755,7 +10757,7 @@ class ApkHelper(QMainWindow):
         config_info_btn_layout.addWidget(refresh_config_btn)
         
         reset_all_config_btn = QPushButton("重置所有配置")
-        reset_all_config_btn.setFixedWidth(90)
+        reset_all_config_btn.setFixedWidth(100)
         reset_all_config_btn.setToolTip("将所有配置恢复为默认值并保存")
         config_info_btn_layout.addWidget(reset_all_config_btn)
         
@@ -10805,7 +10807,7 @@ class ApkHelper(QMainWindow):
         about_text_edit = QTextEdit()
         about_text_edit.setPlainText(about_text)
         about_text_edit.setReadOnly(True)
-        about_text_edit.setStyleSheet("QTextEdit { background-color: white; color: black; font-size: 12px; }")
+        about_text_edit.setStyleSheet("QTextEdit { background-color: white; color: black; }")
         about_tab_widget.addTab(about_text_edit, "关于软件")
         
         # 架构说明子选项卡
@@ -10831,7 +10833,7 @@ class ApkHelper(QMainWindow):
         arch_text_edit = QTextEdit()
         arch_text_edit.setPlainText(arch_text)
         arch_text_edit.setReadOnly(True)
-        arch_text_edit.setStyleSheet("QTextEdit { background-color: white; color: black; font-size: 12px; }")
+        arch_text_edit.setStyleSheet("QTextEdit { background-color: white; color: black; }")
         about_tab_widget.addTab(arch_text_edit, "架构说明")
         
         about_layout.addWidget(about_tab_widget)
@@ -11290,12 +11292,11 @@ class ApkHelper(QMainWindow):
             progress_layout = QVBoxLayout(progress_dialog)
             
             progress_label = QLabel(f"准备处理... 0/{len(apk_files)}")
-            progress_label.setStyleSheet("font-size: 13px; font-weight: bold;")
+            progress_label.setStyleSheet("font-size: 10pt; font-weight: bold;")
             progress_layout.addWidget(progress_label)
             
             progress_text = QTextEdit()
             progress_text.setReadOnly(True)
-            progress_text.setStyleSheet("font-size: 12px;")
             progress_layout.addWidget(progress_text)
             
             btn_layout = QHBoxLayout()
@@ -11801,20 +11802,30 @@ class LocaleListDialog(QDialog):
         # 添加表格样式（包括选中状态和排序指示器）
         self.table.setStyleSheet("""
             QTableWidget {
+                font-family: "SimSun", "Microsoft YaHei", "SimHei", sans-serif;
+                font-size: 9pt;
                 gridline-color: #c0c0c0;
                 border: 1px solid #a0a0a0;
                 selection-background-color: #0078d7;
                 selection-color: white;
+            }
+            QTableWidget::item {
+                font-family: "SimSun", "Microsoft YaHei", "SimHei", sans-serif;
+                font-size: 9pt;
+                padding: -1px 0px -1px 0px;
             }
             QTableWidget::item:selected {
                 background-color: #0078d7;
                 color: white;
             }
             QHeaderView::section {
+                font-family: "SimSun", "Microsoft YaHei", "SimHei", sans-serif;
+                font-size: 9pt;
                 background-color: #f0f0f0;
                 border-bottom: 1px solid #a0a0a0;
                 border-right: 1px solid #a0a0a0;
                 font-weight: normal;
+                padding: -1px 0px -1px 0px;
             }
             QHeaderView::section:hover {
                 background-color: #e0e0e0;
@@ -11828,7 +11839,7 @@ class LocaleListDialog(QDialog):
         
         # 提示文字（放在按钮上方，居中）
         tip_label = QLabel("提示: 支持某种语言并不代表应用可以正常使用该语言")
-        tip_label.setStyleSheet("color: blue; font-size: 12px;")
+        tip_label.setStyleSheet("color: blue; ")
         tip_label.setAlignment(Qt.AlignCenter)
         layout.addWidget(tip_label)
         
@@ -12409,11 +12420,42 @@ def main():
     # 启用高 DPI 缩放、启用高 DPI 位图支持
     QCoreApplication.setAttribute(Qt.AA_EnableHighDpiScaling)
     QCoreApplication.setAttribute(Qt.AA_UseHighDpiPixmaps)
+    # 更精细的DPI控制，保持原始比例（不四舍五入），确保UI和文字同时按缩放比例缩放
+    # 例如125%缩放时，UI和文字都放大1.25倍，不会出现文字超出UI范围的问题
+    QApplication.setHighDpiScaleFactorRoundingPolicy(Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
     
     # 全局禁用 Windows 窗口标题栏上的“上下文帮助按钮”（也就是那个问号按钮）
     QCoreApplication.setAttribute(Qt.AA_DisableWindowContextHelpButton)
     
     app = QApplication(sys.argv)
+    
+    # 全局样式表：统一设置所有控件的字体大小和字体族，确保高DPI缩放时字体正确显示
+    # font-family回退链：宋体 → 微软雅黑 → 黑体 → 系统默认无衬线字体
+    # 宋体(SimSun)：所有中文Windows系统自带，兼容性最强
+    # 微软雅黑：Windows Vista及以上系统自带，中文显示最佳
+    # 黑体(SimHei)：Windows XP及以上系统自带，中文显示良好
+    # sans-serif：系统默认无衬线字体，最终回退
+    # 使用pt单位可根据系统DPI自动缩放，避免px单位在高DPI下字体大小异常
+    # 已有的单独setStyleSheet中的font-size设置会覆盖此全局设置（CSS优先级规则）
+    # padding: 上 右 下 左;
+    app.setStyleSheet("""
+        QLabel { font-family: "SimSun", "Microsoft YaHei", "SimHei", sans-serif; font-size: 9pt; }
+        QPushButton { font-family: "SimSun", "Microsoft YaHei", "SimHei", sans-serif; font-size: 9pt; }
+        QTextEdit { font-family: "SimSun", "Microsoft YaHei", "SimHei", sans-serif; font-size: 9pt; }
+        QLineEdit { font-family: "SimSun", "Microsoft YaHei", "SimHei", sans-serif; font-size: 9pt; }
+        QGroupBox { font-family: "SimSun", "Microsoft YaHei", "SimHei", sans-serif; font-size: 9pt; }
+        QCheckBox { font-family: "SimSun", "Microsoft YaHei", "SimHei", sans-serif; font-size: 9pt; }
+        QComboBox { font-family: "SimSun", "Microsoft YaHei", "SimHei", sans-serif; font-size: 9pt; }
+        QTabWidget::tab-bar { font-family: "SimSun", "Microsoft YaHei", "SimHei", sans-serif; font-size: 9pt; }
+        QTabBar::tab { font-family: "SimSun", "Microsoft YaHei", "SimHei", sans-serif; font-size: 9pt; }
+        QTableWidget { font-family: "SimSun", "Microsoft YaHei", "SimHei", sans-serif; font-size: 9pt; }
+        QTableWidget::item { font-family: "SimSun", "Microsoft YaHei", "SimHei", sans-serif; font-size: 9pt; padding: -1px 0px -1px 0px; }
+        QHeaderView::section { font-family: "SimSun", "Microsoft YaHei", "SimHei", sans-serif; font-size: 9pt; padding: -1px 0px -1px 0px; }
+        QMenu { font-family: "SimSun", "Microsoft YaHei", "SimHei", sans-serif; font-size: 9pt; }
+        QMenu::item { font-family: "SimSun", "Microsoft YaHei", "SimHei", sans-serif; font-size: 9pt; }
+        QMessageBox { font-family: "SimSun", "Microsoft YaHei", "SimHei", sans-serif; font-size: 9pt; }
+        QToolTip { font-family: "SimSun", "Microsoft YaHei", "SimHei", sans-serif; font-size: 9pt; }
+    """)
     
     # 加载应用程序自定义的中文翻译文件
     translators = []  # 保持引用，防止被垃圾回收
