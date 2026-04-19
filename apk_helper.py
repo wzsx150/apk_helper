@@ -68,8 +68,8 @@ from PyQt5.QtCore import Qt, QSize, QTimer, QTranslator, QCoreApplication, QThre
 # 全局变量和常量定义
 # ============================================================================
 
-b_ver = "5.0"
-b_date = "20260321"
+b_ver = "5.1"
+b_date = "20260419"
 b_auth = "wzsx150"
 is_arch_64bit = True    # 暂时没用，主要是用于不同位数系统时不同处理方式
 BASE_DIR = ""    # 基目录，可能会在临时目录
