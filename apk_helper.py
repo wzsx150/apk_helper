@@ -8951,6 +8951,10 @@ class ApkHelper(QMainWindow):
         
         使用QDesktopWidget获取屏幕可用区域，
         计算窗口居中位置并移动窗口。
+        如果窗口高度或宽度超出屏幕可用区域，则调整窗口位置使标题栏可见。
+        高度和宽度分别独立处理：
+        - 垂直方向：高度超出则顶部对齐，否则垂直居中
+        - 水平方向：宽度超出则左对齐，否则水平居中
         """
         # 使用QDesktopWidget来获取屏幕尺寸，更可靠
         desktop = QDesktopWidget()
@@ -8958,11 +8962,114 @@ class ApkHelper(QMainWindow):
         screen_rect = desktop.availableGeometry()
         # 获取窗口尺寸
         window_rect = self.frameGeometry()
-        # 计算居中位置
-        center_point = screen_rect.center()
-        window_rect.moveCenter(center_point)
+        
+        # 垂直方向处理：高度超出则顶部对齐，否则垂直居中
+        if window_rect.height() >= screen_rect.height():
+            # 窗口高度大于等于屏幕可用高度，顶部对齐屏幕顶部（确保标题栏可见）
+            window_rect.moveTop(screen_rect.top())
+        else:
+            # 窗口高度小于屏幕可用高度，垂直居中
+            new_y = screen_rect.top() + (screen_rect.height() - window_rect.height()) // 2
+            window_rect.moveTop(new_y)
+        
+        # 水平方向处理：宽度超出则左对齐，否则水平居中
+        if window_rect.width() >= screen_rect.width():
+            # 窗口宽度大于等于屏幕可用宽度，左对齐屏幕左边
+            window_rect.moveLeft(screen_rect.left())
+        else:
+            # 窗口宽度小于屏幕可用宽度，水平居中
+            new_x = screen_rect.left() + (screen_rect.width() - window_rect.width()) // 2
+            window_rect.moveLeft(new_x)
+        
         # 设置窗口位置
         self.move(window_rect.topLeft())
+
+    def showEvent(self, event):
+        """
+        窗口显示事件处理。
+        
+        首次显示时自动调整窗口以适应屏幕大小：
+        1. 首先尝试压缩窗口高度，使整个窗口在屏幕显示范围内
+        2. 压缩到最矮后仍不能容纳时，确保标题行在屏幕可见范围内
+        """
+        super().showEvent(event)
+        if not hasattr(self, '_screen_adjusted'):
+            self._screen_adjusted = True
+            # 使用QTimer确保窗口完全显示后再调整，避免布局计算不完整
+            QTimer.singleShot(0, self.adjust_to_screen)
+
+    def adjust_to_screen(self):
+        """
+        自动调整窗口以适应屏幕大小。
+        
+        调整策略：
+        1. 首先尝试压缩窗口高度，使整个窗口在屏幕显示范围内
+        2. 压缩到最矮后仍不能容纳整个软件界面时，确保软件标题行在屏幕显示范围内，
+           剩余部分允许超出屏幕底部
+        
+        高度和宽度分别独立处理：
+        - 垂直方向：高度超出则压缩高度或顶部对齐，否则垂直居中
+        - 水平方向：宽度超出则左对齐，否则水平居中
+        
+        使用QScreen获取屏幕可用区域（排除任务栏），计算窗口与屏幕的适配关系。
+        """
+        screen = QApplication.primaryScreen()
+        if screen is None:
+            return
+        
+        screen_rect = screen.availableGeometry()
+        frame_rect = self.frameGeometry()
+        
+        # 检查窗口是否完全在屏幕可用区域内（包括水平和垂直方向）
+        if (frame_rect.left() >= screen_rect.left() and 
+            frame_rect.right() <= screen_rect.right() and
+            frame_rect.top() >= screen_rect.top() and 
+            frame_rect.bottom() <= screen_rect.bottom()):
+            return
+        
+        app_logger.debug(f"窗口尺寸({frame_rect.width()}x{frame_rect.height()})超出屏幕可用区域({screen_rect.width()}x{screen_rect.height()})，开始自动调整")
+        
+        # 策略1：压缩窗口高度以适应屏幕（仅在高度超出时执行）
+        height_exceeded = frame_rect.height() > screen_rect.height()
+        
+        if height_exceeded:
+            # 计算窗口边框额外高度（标题栏+边框）
+            frame_extra_height = frame_rect.height() - self.height()
+            # 目标内容区高度 = 屏幕可用高度 - 边框额外高度 - 边距
+            margin = 10
+            target_content_height = screen_rect.height() - frame_extra_height - margin
+            
+            if target_content_height > 0:
+                app_logger.debug(f"策略1：压缩窗口内容区高度至 {target_content_height} 像素")
+                self.resize(self.width(), target_content_height)
+                # 强制处理事件，确保窗口尺寸更新
+                QApplication.processEvents()
+                
+                # 重新获取窗口尺寸
+                frame_rect = self.frameGeometry()
+        
+        # 策略2：调整窗口位置（高度和宽度分别独立处理）
+        frame_rect = self.frameGeometry()
+        
+        # 垂直方向处理：高度超出则顶部对齐，否则垂直居中
+        if frame_rect.height() > screen_rect.height():
+            # 窗口高度大于屏幕可用高度，顶部对齐屏幕顶部（确保标题栏可见）
+            app_logger.debug("策略2：窗口高度大于屏幕可用高度，调整窗口位置")
+            new_y = screen_rect.top()
+        else:
+            # 窗口高度小于等于屏幕可用高度，垂直居中
+            new_y = screen_rect.top() + (screen_rect.height() - frame_rect.height()) // 2
+        
+        # 水平方向处理：宽度超出则左对齐，否则水平居中
+        if frame_rect.width() > screen_rect.width():
+            # 窗口宽度大于屏幕可用宽度，左对齐屏幕左边
+            app_logger.debug("策略2：窗口宽度大于屏幕可用宽度，调整窗口位置")
+            new_x = screen_rect.left()
+        else:
+            # 窗口宽度小于等于屏幕可用宽度，水平居中
+            new_x = screen_rect.left() + (screen_rect.width() - frame_rect.width()) // 2
+        
+        self.move(new_x, new_y)
 
     def display_app_info(self):
         """
