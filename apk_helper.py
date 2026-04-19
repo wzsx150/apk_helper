@@ -6719,7 +6719,7 @@ class BatchRenameWorker(QThread):
         for i, apk_path in enumerate(self.apk_files):
             if self.stop_flag:
                 result_messages.append(f"已取消: {os.path.basename(apk_path)}")
-                fail_count += 1
+                skip_count += 1
                 self.progress_update.emit(i + 1, total, f"已取消: {os.path.basename(apk_path)}")
                 continue
             
@@ -6776,7 +6776,7 @@ class BatchRenameWorker(QThread):
                 auto_numbered = False
                 original_target = None
                 
-                if apk_path == new_path:
+                if os.path.normcase(apk_path) == os.path.normcase(new_path):
                     skip_count += 1
                     msg = f"跳过: {filename} (文件名相同)"
                     result_messages.append(msg)
@@ -6798,8 +6798,8 @@ class BatchRenameWorker(QThread):
                             numbered_name = f"{base_name}_{number:02d}.apk"
                             numbered_path = os.path.join(dir_name, numbered_name)
                             
-                            # 如果编号后的路径与源文件相同，视为跳过
-                            if numbered_path == apk_path:
+                            # 如果编号后的路径与源文件相同，视为跳过（Windows路径不区分大小写）
+                            if os.path.normcase(numbered_path) == os.path.normcase(apk_path):
                                 skip_count += 1
                                 msg = f"跳过: {filename} (自动编号后文件名相同)"
                                 result_messages.append(msg)
@@ -7536,6 +7536,44 @@ class CustomTableWidget(QTableWidget):
         """
         return QSize(20, 20)
     
+    def _copy_selected_items(self):
+        """
+        复制选中单元格内容到剪贴板。
+        
+        将选中的单元格按行列排序后，用列分隔符和行分隔符拼接，
+        写入系统剪贴板。复制格式可直接粘贴到Excel等软件。
+        """
+        selected_items = self.selectedItems()
+        if not selected_items:
+            return False
+        
+        rows = set()
+        cols = set()
+        item_dict = {}
+        
+        for item in selected_items:
+            row = item.row()
+            col = item.column()
+            rows.add(row)
+            cols.add(col)
+            item_dict[(row, col)] = item.text()
+        
+        sorted_rows = sorted(rows)
+        sorted_cols = sorted(cols)
+        
+        copied_lines = []
+        for row in sorted_rows:
+            row_data = []
+            for col in sorted_cols:
+                row_data.append(item_dict.get((row, col), ""))
+            copied_lines.append(self.col_separator.join(row_data))
+        
+        if copied_lines:
+            clipboard = QApplication.clipboard()
+            clipboard.setText(self.row_separator.join(copied_lines))
+            return True
+        return False
+    
     def keyPressEvent(self, event):
         """
         处理键盘按键事件。
@@ -7547,35 +7585,7 @@ class CustomTableWidget(QTableWidget):
             event: QKeyEvent键盘事件对象
         """
         if event.modifiers() == Qt.ControlModifier and event.key() == Qt.Key_C:
-            selected_items = self.selectedItems()
-            if not selected_items:
-                super().keyPressEvent(event)
-                return
-            
-            rows = set()
-            cols = set()
-            item_dict = {}
-            
-            for item in selected_items:
-                row = item.row()
-                col = item.column()
-                rows.add(row)
-                cols.add(col)
-                item_dict[(row, col)] = item.text()
-            
-            sorted_rows = sorted(rows)
-            sorted_cols = sorted(cols)
-            
-            copied_lines = []
-            for row in sorted_rows:
-                row_data = []
-                for col in sorted_cols:
-                    row_data.append(item_dict.get((row, col), ""))
-                copied_lines.append(self.col_separator.join(row_data))
-            
-            if copied_lines:
-                clipboard = QApplication.clipboard()
-                clipboard.setText(self.row_separator.join(copied_lines))
+            if self._copy_selected_items():
                 event.accept()
             else:
                 super().keyPressEvent(event)
@@ -7614,31 +7624,8 @@ class CustomTableWidget(QTableWidget):
         action = menu.exec_(event.globalPos())
         
         if action == copy_action and selected_items:
-            # 执行复制操作（复用 keyPressEvent 中的逻辑）
-            rows = set()
-            cols = set()
-            item_dict = {}
-            
-            for item in selected_items:
-                row = item.row()
-                col = item.column()
-                rows.add(row)
-                cols.add(col)
-                item_dict[(row, col)] = item.text()
-            
-            sorted_rows = sorted(rows)
-            sorted_cols = sorted(cols)
-            
-            copied_lines = []
-            for row in sorted_rows:
-                row_data = []
-                for col in sorted_cols:
-                    row_data.append(item_dict.get((row, col), ""))
-                copied_lines.append(self.col_separator.join(row_data))
-            
-            if copied_lines:
-                clipboard = QApplication.clipboard()
-                clipboard.setText(self.row_separator.join(copied_lines))
+            # 执行复制操作
+            self._copy_selected_items()
         
         elif action == select_all_action:
             # 执行全选操作
@@ -12056,6 +12043,7 @@ class LocaleListDialog(QDialog):
         """
         if event.modifiers() == Qt.ControlModifier and event.key() == Qt.Key_C:
             self.copy_selected()
+            event.accept()
         else:
             super().keyPressEvent(event)
     
@@ -12115,44 +12103,17 @@ class LocaleListDialog(QDialog):
         """
         复制选中行的语言信息到剪贴板。
         
+        直接调用表格的 _copy_selected_items() 方法，确保与右键菜单复制、
+        Ctrl+C 复制的行为完全一致。
         使用设置的分隔符（CustomTableWidget.row_separator 和 col_separator）。
         格式: 语言代码{col_separator}语言名称{col_separator}中文名称
         """
-        selected_rows = self.table.selectedItems()
-        if not selected_rows:
-            return
-        
-        # 获取选中的行号（去重）
-        rows = set()
-        for item in selected_rows:
-            rows.add(item.row())
-        
-        # 获取设置的分隔符
-        col_sep = CustomTableWidget.col_separator
-        row_sep = CustomTableWidget.row_separator
-        
-        # 构建复制内容
-        lines = []
-        for row in sorted(rows):
-            # 获取各列数据，添加空值检查防止异常
-            locale_item = self.table.item(row, 0)
-            en_name_item = self.table.item(row, 1)
-            zh_name_item = self.table.item(row, 2)
-            
-            # 如果任何单元格为空，跳过该行
-            if not locale_item or not en_name_item or not zh_name_item:
-                app_logger.warning(f"语言列表复制时发现空单元格，跳过行 {row}")
-                continue
-            
-            locale = locale_item.text()
-            en_name = en_name_item.text()
-            zh_name = zh_name_item.text()
-            lines.append(col_sep.join([locale, en_name, zh_name]))
-        
-        if lines:
-            clipboard = QApplication.clipboard()
-            clipboard.setText(row_sep.join(lines))
-            app_logger.debug(f"已复制 {len(lines)} 条语言信息到剪贴板")
+        if self.table._copy_selected_items():
+            # 获取选中行数用于日志
+            selected_rows = self.table.selectedItems()
+            if selected_rows:
+                rows = set(item.row() for item in selected_rows)
+                app_logger.debug(f"已复制 {len(rows)} 条语言信息到剪贴板")
 
 
 # 签名详情小窗口
