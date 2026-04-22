@@ -40,6 +40,8 @@ import logging
 import json
 import struct
 import time
+import tempfile
+import shutil
 from io import BytesIO
 from PIL import Image, ImageDraw
 
@@ -68,8 +70,8 @@ from PyQt5.QtCore import Qt, QSize, QTimer, QTranslator, QCoreApplication, QThre
 # 全局变量和常量定义
 # ============================================================================
 
-b_ver = "5.1"
-b_date = "20260419"
+b_ver = "5.2"
+b_date = "20260422"
 b_auth = "wzsx150"
 is_arch_64bit = True    # 暂时没用，主要是用于不同位数系统时不同处理方式
 BASE_DIR = ""    # 基目录，可能会在临时目录
@@ -845,6 +847,7 @@ DEFAULT_CONFIG = {
     "rename_format": "{app_name}_{version_name}",
     "rename_include_subdir": False,
     "rename_auto_number": False,  # 重复文件名自动添加编号
+    "rename_include_apks": False,  # 批量重命名时同时处理apks文件
     "enable_win11_new_menu": False
 }
 
@@ -1054,6 +1057,13 @@ def validate_config(config_data):
         else:
             app_logger.debug(f"配置项验证 - rename_auto_number: 有效 ({config_data['rename_auto_number']})")
     
+    if "rename_include_apks" in config_data:
+        if not isinstance(config_data["rename_include_apks"], bool):
+            errors.append("同时处理APKS文件选项必须是布尔值")
+            app_logger.debug("配置项验证 - rename_include_apks: 类型错误")
+        else:
+            app_logger.debug(f"配置项验证 - rename_include_apks: 有效 ({config_data['rename_include_apks']})")
+    
     if "enable_win11_new_menu" in config_data:
         if not isinstance(config_data["enable_win11_new_menu"], bool):
             errors.append("Win11新版右键菜单选项必须是布尔值")
@@ -1148,6 +1158,7 @@ def save_config():
         "rename_format": config.get("rename_format", DEFAULT_CONFIG["rename_format"]),
         "rename_include_subdir": config.get("rename_include_subdir", DEFAULT_CONFIG["rename_include_subdir"]),
         "rename_auto_number": config.get("rename_auto_number", DEFAULT_CONFIG["rename_auto_number"]),
+        "rename_include_apks": config.get("rename_include_apks", DEFAULT_CONFIG["rename_include_apks"]),
         "enable_win11_new_menu": config.get("enable_win11_new_menu", DEFAULT_CONFIG["enable_win11_new_menu"])
     }
     
@@ -3199,7 +3210,15 @@ class APKParser:
         return unique
     
     def get_file_info(self):
-        """获取APK文件信息"""
+        """
+        获取APK文件信息。
+        
+        返回包含文件路径、大小（字节数）和MD5值的字典。
+        MD5计算使用公共函数calc_file_md5。
+        
+        Returns:
+            dict: {'path': str, 'size': int, 'md5': str or None}
+        """
         result = {
             'path': self.apk_path,
             'size': 0,
@@ -3209,18 +3228,7 @@ class APKParser:
         try:
             if os.path.exists(self.apk_path):
                 result['size'] = os.path.getsize(self.apk_path)
-                
-                md5_hash = hashlib.md5()
-                
-                with open(self.apk_path, 'rb') as f:
-                    while True:
-                        chunk = f.read(8192)
-                        if not chunk:
-                            break
-                        md5_hash.update(chunk)
-                
-                result['md5'] = md5_hash.hexdigest().upper()
-        
+                result['md5'] = calc_file_md5(self.apk_path)
         except Exception:
             pass
         
@@ -6726,14 +6734,14 @@ class BatchRenameWorker(QThread):
             filename = os.path.basename(apk_path)
             
             try:
-                self.progress_update.emit(i + 1, total, f"正在解析: {filename}")
+                self.progress_update.emit(i + 1, total, f"==== 正在解析: {filename}")
                 
                 info = get_apk_basic_info(apk_path)
                 if not info:
                     fail_count += 1
-                    msg = f"失败: {filename} - 无法解析APK信息"
+                    msg = f"失败: {filename} - 无法解析APK/APKS信息"
                     result_messages.append(msg)
-                    self.file_processed.emit(filename, "失败", "无法解析APK信息")
+                    self.file_processed.emit(filename, "失败", "无法解析APK/APKS信息")
                     continue
                 
                 new_name = self.rename_format
@@ -6769,7 +6777,11 @@ class BatchRenameWorker(QThread):
                 if len(new_name) > max_filename_length:
                     new_name = new_name[:max_filename_length]
                 
-                new_name = new_name + ".apk"
+                # 保留原始文件扩展名（支持.apk和.apks）
+                original_ext = os.path.splitext(apk_path)[1].lower()
+                if not original_ext:
+                    original_ext = '.apk'
+                new_name = new_name + original_ext
                 new_path = os.path.join(os.path.dirname(apk_path), new_name)
                 
                 # 初始化自动编号相关变量
@@ -6787,7 +6799,8 @@ class BatchRenameWorker(QThread):
                 if os.path.exists(new_path):
                     if self.auto_number:
                         # 自动添加编号以避免文件名重复
-                        base_name = new_name[:-4]  # 去除.apk扩展名
+                        base_name = os.path.splitext(new_name)[0]  # 去除扩展名
+                        name_ext = os.path.splitext(new_name)[1].lower()  # 保留扩展名
                         dir_name = os.path.dirname(apk_path)
                         found_unique = False
                         should_skip = False
@@ -6795,7 +6808,7 @@ class BatchRenameWorker(QThread):
                         original_target = new_name  # 保存原始目标文件名
                         
                         while number <= 9999:
-                            numbered_name = f"{base_name}_{number:02d}.apk"
+                            numbered_name = f"{base_name}_{number:02d}{name_ext}"
                             numbered_path = os.path.join(dir_name, numbered_name)
                             
                             # 如果编号后的路径与源文件相同，视为跳过（Windows路径不区分大小写）
@@ -7207,45 +7220,61 @@ class ElevatedPs1Worker(QThread):
 
 class ApkWorker(QThread):
     """
-    APK后台解析工作线程。
+    APK/APKS后台解析工作线程。
     
-    在后台线程中执行APK文件的解析操作，避免阻塞主界面。
+    在后台线程中执行APK/APKS文件的解析操作，避免阻塞主界面。
     使用多线程并行解析应用信息、签名信息、文件信息和图标。
+    
+    对于APKS文件，会先提取base APK到临时目录，再按普通APK流程解析。
     
     Signals:
         app_info_finished: 应用信息解析完成信号 (apk_info, error_message, done)
         signature_info_finished: 签名信息解析完成信号 (signature_info, certs, error_message, done)
-        file_info_finished: 文件信息解析完成信号 (file_info, error_message, done)
+        file_info_finished: 文件信息解析完成信号 (file_info, file_info_detail, error_message, done)
         icon_finished: 图标解析完成信号 (icon_data, error_message, apk_icon_info, done)
         progress_update: 进度更新信号
     
     Attributes:
-        apk_path: APK文件路径
+        apk_path: APK/APKS文件路径
+        file_type: 文件类型 ('apk' 或 'apks')
         stop_flag: 停止标志，用于中断解析操作
         certs: 证书数据列表
         parser: APKParser解析器实例
         apk_info: 应用信息字典
         apk_icon_info: 图标信息字典
+        temp_dir: APKS文件解压的临时目录（仅APKS文件使用）
+        apks_info: APKS容器的附加信息（仅APKS文件使用）
     """
     # 定义多个信号，分别用于不同类型的信息解析完成
     app_info_finished = pyqtSignal(dict, str, bool)  # 应用信息解析完成 (apk_info, error_message, done)
     signature_info_finished = pyqtSignal(str, object, str, bool)  # 签名信息解析完成 (signature_info, certs, error_message, done)
-    file_info_finished = pyqtSignal(str, str, bool)  # 文件信息解析完成 (file_info, error_message, done)
+    file_info_finished = pyqtSignal(str, str, str, bool)  # 文件信息解析完成 (file_info, file_info_detail, error_message, done)
     icon_finished = pyqtSignal(object, str, dict, bool)  # 图标解析完成 (icon_data, error_message, apk_icon_info, done) - 使用object类型允许None值
     progress_update = pyqtSignal(str)  # 进度更新信号
 
-    def __init__(self, apk_path):
+    # 预编译架构匹配正则表达式（按长度从长到短排序，避免子串误匹配）
+    _ARCH_PATTERNS = None
+    # 预编译语言匹配正则表达式
+    _LOCALE_PATTERN = None
+    # 已知非语言关键词集合
+    _NON_LANG_KEYWORDS = frozenset(['master', 'arm', 'x86', 'mips', 'mas'])
+
+    def __init__(self, apk_path, file_type='apk'):
         """
-        初始化APK解析工作线程。
+        初始化APK/APKS解析工作线程。
         
         Args:
-            apk_path: APK文件的完整路径
+            apk_path: APK/APKS文件的完整路径
+            file_type: 文件类型，'apk' 或 'apks'，默认为 'apk'
         """
         super().__init__()
         self.apk_path = apk_path
+        self.file_type = file_type
         self.stop_flag = False  # 添加停止标志，用于中断操作
         self.certs = None
         self.parser = None  # 统一的APK解析器
+        self.temp_dir = None  # APKS文件解压的临时目录
+        self.apks_info = None  # APKS容器的附加信息
         self.init_apk_info() # 初始化apk_info字典
 
     def init_apk_info(self):
@@ -7265,7 +7294,10 @@ class ApkWorker(QThread):
             'build_sdk_version': '',    # 暂时不使用
             'compile_sdk_version': '',    # 若 compile_sdk 不存在，则使用 build_sdk 的值
             'permissions': [],
+            'locales': [],    # 支持的语言列表
             'arch_support': {},    # CPU架构支持信息
+            'file_size': '',    # 文件大小（格式化字符串，如 "12.34 MB"）
+            'file_md5': '',    # 文件MD5值（大写十六进制字符串）
         }
         self.apk_icon_info = {
             'icon_list': [],
@@ -7273,30 +7305,106 @@ class ApkWorker(QThread):
             'icon_sure': True  # True表示确定的图标，False表示推测/猜测的图标
         }
 
+    def _extract_apks_base_apk(self):
+        """
+        从APKS文件中提取base APK到临时目录。
+        
+        APKS文件是ZIP格式，内部包含base-master.apk或base.apk作为基础APK。
+        此方法将base APK解压到临时目录，以便后续使用APKParser解析。
+        同时收集APKS容器内的分割APK信息。
+        
+        Returns:
+            str: 提取的base APK文件的完整路径
+            
+        Raises:
+            ValueError: 如果APKS文件中找不到base APK，或base APK不是有效的ZIP格式
+            zipfile.BadZipFile: 如果APKS文件不是有效的ZIP格式
+        """
+        app_logger.info(f"开始提取APKS文件中的base APK: {os.path.normpath(self.apk_path)}")
+        self.progress_update.emit("正在提取APKS文件中的base APK...")
+        
+        try:
+            # 先创建临时目录，确保异常时能正确清理
+            try:
+                self.temp_dir = tempfile.mkdtemp(prefix="apk_helper_apks_")
+            except OSError as e:
+                raise ValueError(f"创建临时目录失败（磁盘空间不足或权限问题）: {e}")
+            
+            # 使用公共函数提取base APK到临时目录，同时收集APKS容器信息
+            base_apk_path, _, apks_meta = extract_apks_base_apk(self.apk_path, temp_dir=self.temp_dir)
+            app_logger.info(f"已提取base APK: {apks_meta['base_apk_name']}，包含 {len(apks_meta['split_apks'])} 个分割APK")
+        except ValueError:
+            raise
+        except zipfile.BadZipFile:
+            raise ValueError("APKS文件不是有效的ZIP格式，文件可能已损坏")
+        except Exception as e:
+            raise ValueError(f"APKS文件提取失败: {e}")
+        
+        # 保存APKS容器的附加信息
+        self.apks_info = {
+            'apks_path': self.apk_path,
+            'base_apk_name': apks_meta['base_apk_name'],
+            'has_toc_pb': apks_meta['has_toc_pb'],
+            'split_apks': apks_meta['split_apks'],
+        }
+        
+        return base_apk_path
+
+    def _cleanup_temp_dir(self):
+        """
+        清理APKS文件解压的临时目录。
+        
+        删除临时目录及其中的所有文件，释放磁盘空间。
+        """
+        cleanup_temp_dir(self.temp_dir)
+        self.temp_dir = None
+
     def run(self):
         """
-        执行APK解析任务。
+        执行APK/APKS解析任务。
         
-        创建APKParser解析器，然后并行启动四个解析任务：
+        对于APK文件：直接创建APKParser解析。
+        对于APKS文件：先提取base APK到临时目录，再创建APKParser解析。
+        然后并行启动四个解析任务：
         - 应用信息解析
         - 签名信息解析
         - 文件信息解析
         - 图标解析
         
-        解析完成后关闭解析器释放资源。
+        解析完成后关闭解析器释放资源，并清理临时目录。
         """
         start_time = time.time()
         apk_name = os.path.basename(self.apk_path)
-        app_logger.info(f"开始解析APK: {apk_name}")
+        app_logger.info(f"开始解析{'APKS' if self.file_type == 'apks' else 'APK'}: {apk_name}")
+        
+        # 确定实际要解析的APK路径
+        actual_apk_path = self.apk_path
+        
+        # 如果是APKS文件，先提取base APK
+        if self.file_type == 'apks':
+            try:
+                actual_apk_path = self._extract_apks_base_apk()
+                app_logger.info(f"APKS文件base APK提取成功: {os.path.normpath(actual_apk_path)}")
+                # 提取完成后，恢复进度提示为正在解析应用信息
+                self.progress_update.emit("正在解析应用信息...")
+            except Exception as e:
+                app_logger.error(f"APKS文件提取失败: {e}")
+                self.app_info_finished.emit(self.apk_info, f"APKS文件提取失败: {e}", True)
+                self.signature_info_finished.emit("", None, f"APKS文件提取失败: {e}", True)
+                self.file_info_finished.emit("", "", f"APKS文件提取失败: {e}", True)
+                self.icon_finished.emit(None, f"APKS文件提取失败: {e}", self.apk_icon_info, True)
+                self._cleanup_temp_dir()
+                return
         
         try:
-            self.parser = APKParser(self.apk_path)
+            self.parser = APKParser(actual_apk_path)
         except Exception as e:
             app_logger.error(f"APKParser初始化失败: {e}")
             self.app_info_finished.emit(self.apk_info, f"APK解析器初始化失败: {e}", True)
             self.signature_info_finished.emit("", None, f"APK解析器初始化失败: {e}", True)
-            self.file_info_finished.emit("", f"APK解析器初始化失败: {e}", True)
+            self.file_info_finished.emit("", "", f"APK解析器初始化失败: {e}", True)
             self.icon_finished.emit(None, f"APK解析器初始化失败: {e}", self.apk_icon_info, True)
+            self._cleanup_temp_dir()
             return
         
         try:
@@ -7328,8 +7436,11 @@ class ApkWorker(QThread):
             # 清空证书数据引用（数据已传递给主窗口）
             self.certs = None
             
+            # 清理APKS临时目录
+            self._cleanup_temp_dir()
+            
             elapsed_time = time.time() - start_time
-            app_logger.info(f"结束解析APK: {apk_name}, 总耗时: {elapsed_time:.2f}秒")
+            app_logger.info(f"结束解析{'APKS' if self.file_type == 'apks' else 'APK'}: {apk_name}, 总耗时: {elapsed_time:.2f}秒")
 
     def stop(self):
         """
@@ -7353,6 +7464,8 @@ class ApkWorker(QThread):
         解析应用信息（基本信息+权限信息）的任务。
         
         使用aapt2解析APK基本信息，解析完成后发送信号通知主线程。
+        对于APKS文件，还会从分割APK文件名中识别CPU架构和语言信息，
+        与base APK的信息合并后一起返回，确保基本信息显示完整。
         """
         try:
             app_logger.debug("开始解析应用信息任务")
@@ -7370,6 +7483,66 @@ class ApkWorker(QThread):
             self.apk_info['arch_support'] = self.parser.analyze_arch_support()
             self.apk_info['locales'] = info.get('locales', [])  # 获取支持的语言列表
             
+            # 对于APKS文件，从分割APK文件名中识别CPU架构和语言，与base APK信息合并
+            if self.file_type == 'apks' and self.apks_info:
+                split_apks = self.apks_info.get('split_apks', [])
+                if split_apks:
+                    # 识别并合并架构信息
+                    detected_archs = self._detect_arch_from_splits(split_apks)
+                    if detected_archs:
+                        arch_support = self.apk_info.get('arch_support', {})
+                        existing_archs = arch_support.get('native_codes', [])
+                        merged_archs = list(existing_archs)
+                        for arch in detected_archs:
+                            if arch not in merged_archs:
+                                merged_archs.append(arch)
+                        # 重新按系列分组生成display_text（与analyze_arch_support格式一致）
+                        arm_32 = any(abi in merged_archs for abi in ['armeabi', 'armeabi-v7a'])
+                        arm_64 = 'arm64-v8a' in merged_archs
+                        x86_32 = 'x86' in merged_archs
+                        x86_64 = 'x86_64' in merged_archs
+                        mips_32 = 'mips' in merged_archs
+                        mips_64 = 'mips64' in merged_archs
+                        riscv_64 = 'riscv64' in merged_archs
+                        
+                        display_parts = []
+                        if arm_32 and arm_64:
+                            display_parts.append('32+64位ARM')
+                        elif arm_64:
+                            display_parts.append('64位ARM')
+                        elif arm_32:
+                            display_parts.append('32位ARM')
+                        if x86_32 and x86_64:
+                            display_parts.append('32+64位x86')
+                        elif x86_64:
+                            display_parts.append('64位x86')
+                        elif x86_32:
+                            display_parts.append('32位x86')
+                        if mips_32 and mips_64:
+                            display_parts.append('32+64位MIPS')
+                        elif mips_64:
+                            display_parts.append('64位MIPS')
+                        elif mips_32:
+                            display_parts.append('32位MIPS')
+                        if riscv_64:
+                            display_parts.append('64位RISC-V')
+                        
+                        arch_support['native_codes'] = merged_archs
+                        arch_support['display_text'] = ', '.join(display_parts) if display_parts else arch_support.get('display_text', '')
+                        self.apk_info['arch_support'] = arch_support
+                        app_logger.debug(f"APKS合并架构: base={existing_archs}, splits={detected_archs}, 合并后={merged_archs}")
+                    
+                    # 识别并合并语言信息
+                    detected_locales = self._detect_locales_from_splits(split_apks)
+                    if detected_locales:
+                        existing_locales = self.apk_info.get('locales', [])
+                        merged_locales = list(existing_locales)
+                        for locale in detected_locales:
+                            if locale not in merged_locales:
+                                merged_locales.append(locale)
+                        self.apk_info['locales'] = merged_locales
+                        app_logger.debug(f"APKS合并语言: base={len(existing_locales)}种, splits={detected_locales}, 合并后={len(merged_locales)}种")
+            
             app_logger.debug(f"包名: {self.apk_info['package_name']}, 版本: {self.apk_info['version_name']}")
             app_logger.debug(f"权限数量: {len(self.apk_info['permissions'])}")
             app_logger.debug(f"架构支持: {self.apk_info['arch_support'].get('display_text', '未知')}")
@@ -7385,6 +7558,7 @@ class ApkWorker(QThread):
         解析签名信息的任务。
         
         获取APK签名信息，解析完成后发送信号通知主线程。
+        对于APKS文件，签名信息来自base APK，会在开头标注来源。
         """
         try:
             app_logger.debug("开始解析签名信息任务")
@@ -7399,7 +7573,11 @@ class ApkWorker(QThread):
             app_logger.debug(f"V1: {sig_info['v1']}, V2: {sig_info['v2']}, V3: {sig_info['v3']}")
             
             signature_lines = []
-            signature_lines.append(f"应用包名: {package_name}")
+            # APKS文件时，包名行显示为"应用包名[APKS\base.apk]"格式
+            if self.file_type == 'apks' and self.apks_info:
+                signature_lines.append(f"应用包名[APKS\\{self.apks_info['base_apk_name']}]: {package_name}")
+            else:
+                signature_lines.append(f"应用包名: {package_name}")
             signature_lines.append(f"V1签名状态: {'已签名' if sig_info['v1'] else '未签名'}")
             signature_lines.append(f"V2签名状态: {'已签名' if sig_info['v2'] else '未签名'}")
             signature_lines.append(f"V3签名状态: {'已签名' if sig_info['v3'] else '未签名'}")
@@ -7441,25 +7619,262 @@ class ApkWorker(QThread):
             self.signature_info_finished.emit("", self.certs, f"解析签名信息失败: {str(e)}", True)
 
     def _parse_file_info_task(self):
-        """解析文件信息的任务"""
+        """
+        解析文件信息的任务。
+        
+        对于APK文件：显示APK文件信息（路径、MD5、大小）。
+        对于APKS文件：显示APKS容器完整详细信息，包括分割APK列表和Base APK信息。
+        同时将文件大小和MD5存入apk_info，供其他功能（如自定义复制）直接使用。
+        """
         try:
             app_logger.debug("开始解析文件信息任务")
-            self.file_info_finished.emit("正在解析文件信息...", "", False)
+            self.file_info_finished.emit("正在解析文件信息...", "", "", False)
             
+            # 获取内部base APK的文件信息
             file_info = self.parser.get_file_info()
             file_size = file_info.get('size', 0)
             size_mb = file_size / (1024 * 1024)
             
             app_logger.debug(f"文件大小: {size_mb:.2f} MB")
             
-            info = f"文件路径: {file_info.get('path', '')}\n"
-            info += f"文件 MD5: {file_info.get('md5', 'N/A')}\n"
-            info += f"文件大小: {file_size:,} 字节 ({size_mb:.2f} MB)"
+            if self.file_type == 'apks' and self.apks_info:
+                # APKS文件模式：构建完整详细信息
+                apks_path = self.apks_info['apks_path']
+                apks_size = os.path.getsize(apks_path)
+                apks_size_mb = apks_size / (1024 * 1024)
+                
+                # 计算APKS文件的MD5（使用公共函数）
+                apks_md5 = calc_file_md5(apks_path)
+                
+                # 将APKS容器的文件大小和MD5存入apk_info（供自定义复制等功能使用）
+                self.apk_info['file_size'] = format_file_size(apks_size)
+                self.apk_info['file_md5'] = apks_md5 or ''
+                
+                # 构建详细信息文本（Windows路径斜杠）
+                apks_path_win = os.path.normpath(apks_path)
+                detail_info = f"【APKS容器信息】\n"
+                detail_info += f"文件路径: {apks_path_win}\n"
+                detail_info += f"文件 MD5: {apks_md5 or 'N/A'}\n"
+                detail_info += f"文件大小: {apks_size:,} 字节 ({apks_size_mb:.2f} MB)\n"
+                detail_info += f"索引文件: {'存在 (toc.pb)' if self.apks_info['has_toc_pb'] else '不存在'}\n"
+                detail_info += f"Base APK: {self.apks_info['base_apk_name']}\n"
+                
+                # 分割APK信息（只显示MB单位）
+                split_apks = self.apks_info['split_apks']
+                if split_apks:
+                    detail_info += f"分割APK数量: {len(split_apks)}\n"
+                    detail_info += "分割APK列表:\n"
+                    for split_apk in split_apks:
+                        split_name = split_apk['name']
+                        split_size_mb = split_apk['size'] / (1024 * 1024)
+                        split_type = self._get_split_apk_type(split_name)
+                        detail_info += f"  {split_name} ({split_size_mb:.2f} MB) [{split_type}]\n"
+                else:
+                    detail_info += "分割APK数量: 0（仅包含base APK）\n"
+                
+                # Base APK信息（Windows路径斜杠）
+                base_apk_path_win = os.path.normpath(file_info.get('path', ''))
+                detail_info += f"\n【Base APK信息】\n"
+                detail_info += f"文件路径: {base_apk_path_win}\n"
+                detail_info += f"文件 MD5: {file_info.get('md5', 'N/A')}\n"
+                detail_info += f"文件大小: {file_size:,} 字节 ({size_mb:.2f} MB)"
+                
+                # APKS文件：file_info和file_info_detail都使用完整详细信息
+                self.file_info_detail = detail_info
+                info_text = detail_info
+            else:
+                # 普通APK文件模式（Windows路径斜杠）
+                apk_path_win = os.path.normpath(file_info.get('path', ''))
+                info_text = f"文件路径: {apk_path_win}\n"
+                info_text += f"文件 MD5: {file_info.get('md5', 'N/A')}\n"
+                info_text += f"文件大小: {file_size:,} 字节 ({size_mb:.2f} MB)"
+                self.file_info_detail = None
+                
+                # 将APK的文件大小和MD5存入apk_info（供自定义复制等功能使用）
+                self.apk_info['file_size'] = format_file_size(file_size)
+                self.apk_info['file_md5'] = file_info.get('md5', '') or ''
             
-            self.file_info_finished.emit(info, "", True)
+            self.file_info_finished.emit(info_text, self.file_info_detail or "", "", True)
         except Exception as e:
             app_logger.error(f"失败: {str(e)}")
-            self.file_info_finished.emit("", f"解析文件信息失败: {str(e)}", True)
+            self.file_info_finished.emit("", "", f"解析文件信息失败: {str(e)}", True)
+
+    def _get_abi_description(self, abi):
+        """
+        获取ABI的描述信息。
+        
+        委托调用模块级公共函数get_abi_description，避免重复实现。
+        
+        Args:
+            abi: ABI名称
+            
+        Returns:
+            str: ABI描述
+        """
+        return get_abi_description(abi)
+
+    def _get_arch_patterns(self):
+        """
+        获取预编译的架构匹配正则表达式列表（懒加载，只编译一次）。
+        
+        Returns:
+            list: [(编译后正则, 标准ABI名称), ...]
+        """
+        if ApkWorker._ARCH_PATTERNS is None:
+            arch_map = [
+                ('arm64_v8a', 'arm64-v8a'),
+                ('armeabi_v7a', 'armeabi-v7a'),
+                ('x86_64', 'x86_64'),
+                ('riscv64', 'riscv64'),
+                ('armeabi', 'armeabi'),
+                ('mips64', 'mips64'),
+                ('x86', 'x86'),
+                ('mips', 'mips'),
+            ]
+            # 构建正则时，对短名称添加负向前瞻，避免子串误匹配：
+            # - x86 不匹配 x86_64（后面不能跟 _64 或 64）
+            # - armeabi 不匹配 armeabi_v7a（后面不能跟 _v7a）
+            # - mips 不匹配 mips64（后面不能跟 _64 或 64）
+            ApkWorker._ARCH_PATTERNS = []
+            for key, name in arch_map:
+                if key == 'x86':
+                    pattern = re.compile(rf'[.\-_]x86(?!_?64)(?:[.\-_]|$)')
+                elif key == 'armeabi':
+                    pattern = re.compile(rf'[.\-_]armeabi(?!_v7a)(?:[.\-_]|$)')
+                elif key == 'mips':
+                    pattern = re.compile(rf'[.\-_]mips(?!_?64)(?:[.\-_]|$)')
+                else:
+                    pattern = re.compile(rf'[.\-_]{re.escape(key)}(?:[.\-_]|$)')
+                ApkWorker._ARCH_PATTERNS.append((pattern, name))
+        return ApkWorker._ARCH_PATTERNS
+
+    def _detect_arch_from_splits(self, split_apks):
+        """
+        从分割APK文件名中识别CPU架构。
+        
+        APKS文件通常会将不同CPU架构的native库分割为独立的APK，
+        如 split_config.arm64_v8a.apk 表示支持 arm64-v8a 架构。
+        此方法从分割APK文件名中提取架构信息，返回识别到的架构列表。
+        使用预编译正则表达式提高匹配效率。
+        
+        Args:
+            split_apks: 分割APK信息列表 [{'name': str, 'size': int}, ...]
+            
+        Returns:
+            list: 识别到的标准ABI名称列表，如 ['arm64-v8a', 'x86']
+        """
+        if not split_apks:
+            return []
+        
+        arch_patterns = self._get_arch_patterns()
+        detected_archs = []
+        for split_apk in split_apks:
+            name_lower = split_apk['name'].lower()
+            for pattern, arch_name in arch_patterns:
+                if pattern.search(name_lower) and arch_name not in detected_archs:
+                    detected_archs.append(arch_name)
+        
+        if detected_archs:
+            app_logger.debug(f"从分割APK识别到架构: {detected_archs}")
+        
+        return detected_archs
+
+    def _detect_locales_from_splits(self, split_apks):
+        """
+        从分割APK文件名中识别语言。
+        
+        APKS文件通常会将不同语言的资源分割为独立的APK，
+        如 split_config.zh.apk 表示包含中文资源。
+        此方法从分割APK文件名中提取语言信息，返回识别到的语言代码列表。
+        使用预编译正则表达式提高匹配效率。
+        
+        Args:
+            split_apks: 分割APK信息列表 [{'name': str, 'size': int}, ...]
+            
+        Returns:
+            list: 识别到的语言代码列表，如 ['zh', 'en']
+        """
+        if not split_apks:
+            return []
+        
+        # 懒加载预编译正则
+        if ApkWorker._LOCALE_PATTERN is None:
+            ApkWorker._LOCALE_PATTERN = re.compile(r'(?:base|config)[.\-]([a-z]{2,3}(?:-[a-z]{2,4})?)(?:\.|$)')
+        
+        detected_locales = []
+        for split_apk in split_apks:
+            name_lower = split_apk['name'].lower()
+            lang_match = ApkWorker._LOCALE_PATTERN.search(name_lower)
+            if lang_match:
+                lang_code = lang_match.group(1)
+                if lang_code not in ApkWorker._NON_LANG_KEYWORDS and lang_code not in detected_locales:
+                    detected_locales.append(lang_code)
+        
+        if detected_locales:
+            app_logger.debug(f"从分割APK识别到语言: {detected_locales}")
+        
+        return detected_locales
+
+    def _get_split_apk_type(self, split_name):
+        """
+        从分割APK文件名推断其类型。
+        
+        根据文件名中的关键词判断分割APK的类型，如架构分割、
+        屏幕密度分割、语言分割、功能模块分割等。
+        
+        Args:
+            split_name: 分割APK的文件名（含路径）
+            
+        Returns:
+            str: 分割类型描述
+        """
+        name_lower = split_name.lower()
+        
+        # instant目录下的APK
+        if name_lower.startswith('instant/'):
+            return "即时应用"
+        
+        # standalone目录下的APK
+        if name_lower.startswith('standalone/'):
+            return "独立APK"
+        
+        # asset-slices目录下的APK
+        if name_lower.startswith('asset-slices/'):
+            return "资源包"
+        
+        # 架构分割
+        arch_keywords = ['arm64_v8a', 'armeabi_v7a', 'x86_64', 'x86', 'armeabi', 'mips', 'riscv64']
+        for arch in arch_keywords:
+            if arch in name_lower:
+                return f"架构分割 ({arch})"
+        
+        # 屏幕密度分割（按长度从长到短排序，避免短关键词误匹配长关键词，如hdpi匹配xxhdpi）
+        density_keywords = ['xxxhdpi', 'xxhdpi', 'xhdpi', 'tvdpi', 'anydpi', 'nodpi', 'hdpi', 'mdpi', 'ldpi']
+        for density in density_keywords:
+            if density in name_lower:
+                return f"密度分割 ({density})"
+        
+        # 语言分割（常见的语言代码模式）
+        # 匹配 base-zh, base-en, config.zh, config.en, split_config.zh 等模式
+        # 排除已知非语言关键词：master（如base-master.apk不是语言分割）
+        # 注意：正则只匹配2-3个字母，但master有6个字母，所以需要额外检查匹配位置后的字符
+        lang_match = re.search(r'(?:base|config)[.\-]([a-z]{2,3}(?:-[a-z]{2,4})?)(?:\.|$)', name_lower)
+        if lang_match:
+            lang_code = lang_match.group(1)
+            # 排除已知非语言关键词（正则已通过(?:\.|$)确保匹配完整词段，但保留排除逻辑作为安全措施）
+            non_lang_keywords = ['master', 'arm', 'x86', 'mips', 'mas']
+            if lang_code not in non_lang_keywords:
+                return f"语言分割 ({lang_code})"
+        
+        # 功能模块分割（feature-开头或split_开头但不是split_config）
+        if 'feature-' in name_lower or (name_lower.startswith('split_') and 'split_config.' not in name_lower):
+            return "功能模块分割"
+        
+        # split_config 开头但未匹配到上述类型的，标记为配置分割
+        if name_lower.startswith('split_config.'):
+            return "配置分割"
+        
+        return "其他分割"
 
     def _parse_icon_task(self):
         """解析图标的任务
@@ -8554,10 +8969,11 @@ class ApkHelper(QMainWindow):
         """
         初始化成员变量。
         
-        设置当前APK路径、应用信息、签名信息、文件信息等初始值，
+        设置当前APK/APKS路径、文件类型、应用信息、签名信息、文件信息等初始值，
         初始化后台处理线程相关变量。
         """
         self.current_apk_path = ""
+        self.current_file_type = "apk"  # 当前文件类型：'apk' 或 'apks'
         # 初始化应用信息的内容
         self.init_apk_info()        # 保存 应用信息 的键值对
         self.signature_info = ""    # 保存 签名信息 的文本内容
@@ -8566,6 +8982,8 @@ class ApkHelper(QMainWindow):
         self.certs = None
         # 初始化图标数据
         self.icon_data = None
+        # 初始化文件信息详情（APKS文件时使用）
+        self.file_info_detail = None
         # 初始化线程中的任务运行状态是否结束
         self.apk_info_status = False
         self.signature_info_status = False
@@ -8594,6 +9012,8 @@ class ApkHelper(QMainWindow):
             'compile_sdk_version': '',    # 若 compile_sdk 不存在，则使用 build_sdk 的值
             'permissions': [],
             'locales': [],    # 支持的语言列表
+            'file_size': '',    # 文件大小（格式化字符串，如 "12.34 MB"）
+            'file_md5': '',    # 文件MD5值（大写十六进制字符串）
         }
         self.apk_icon_info = {
             'icon_list': [],
@@ -8859,11 +9279,25 @@ class ApkHelper(QMainWindow):
         file_info_group = QGroupBox("文件信息")
         file_info_layout = QVBoxLayout(file_info_group)
         file_info_layout.setContentsMargins(3, 3, 3, 3)    # 内部组件的间距
+        
+        # 创建水平布局用于放置文本框和详情按钮
+        file_horizontal_layout = QHBoxLayout()
+        
         self.file_info_text = CustomTextEdit()
         self.file_info_text.setReadOnly(True)
         self.file_info_text.setLineWrapMode(QTextEdit.NoWrap)  # 不自动换行
         self.file_info_text.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        file_info_layout.addWidget(self.file_info_text)
+        file_horizontal_layout.addWidget(self.file_info_text)
+        
+        # 添加文件信息详情按钮（仅APKS文件时显示）
+        self.show_file_info_detail_btn = QPushButton("..")
+        self.show_file_info_detail_btn.setFixedWidth(24)
+        self.show_file_info_detail_btn.setToolTip("查看APKS文件详细信息")
+        self.show_file_info_detail_btn.clicked.connect(self.show_file_info_detail_dialog)
+        file_horizontal_layout.addWidget(self.show_file_info_detail_btn)
+        self.show_file_info_detail_btn.setVisible(False)  # 默认隐藏，仅APKS文件时显示
+        
+        file_info_layout.addLayout(file_horizontal_layout)
         self.main_splitter.addWidget(file_info_group)
         
         # 设置QSplitter的初始大小比例，可以调整不同区域的初始高度。基于这个比例进行显示，后面加载内容后会更新比例。
@@ -9066,6 +9500,7 @@ class ApkHelper(QMainWindow):
         包名、应用名、中文应用名、版本号、内部版本号、CPU架构、SDK版本等。
         SDK版本会自动转换为对应的Android版本名称。
         CPU架构信息独立成一行显示。
+        对于APKS文件，会在表格顶部增加文件类型标识行。
         """
         # 切换到基本信息选项卡
         self.app_info_tab_widget.setCurrentIndex(0)
@@ -9074,6 +9509,9 @@ class ApkHelper(QMainWindow):
         
         # 清空表格
         self.app_info_table.setRowCount(0)
+        
+        # 判断是否为APKS文件
+        is_apks = self.current_file_type == 'apks'
         
         # 基础信息
         package_name = self.apk_info['package_name'] or "未知"
@@ -9086,7 +9524,7 @@ class ApkHelper(QMainWindow):
         # SDK版本处理
         min_sdk = self.apk_info['min_sdk_version'] or "未知"
         target_sdk = self.apk_info['target_sdk_version'] or "未知"
-        build_sdk = self.apk_info['build_sdk_version'] or "未知"
+        build_sdk = self.apk_info['build_sdk_version'] or "未知" # 未使用，暂时先保留
         compile_sdk = self.apk_info['compile_sdk_version'] or "未知"
 
         min_sdk_display = f"{min_sdk} ({self.sdk_version_map.get(str(min_sdk), '未知版本')})"
@@ -9098,19 +9536,24 @@ class ApkHelper(QMainWindow):
         arch_display_text = arch_support.get('display_text', '')
         arch_tooltip = self._build_arch_tooltip(arch_support)
 
+        # APKS文件时，包名行名加[APKS]标识
+        package_name_row = "应用包名[APKS]" if is_apks else "应用包名"
+        # APKS文件时，CPU架构行名加[不准确]标识
+        arch_row_name = "CPU架构[不准确]" if is_apks else "CPU架构"
+
         # 添加到表格
-        self.add_table_row(self.app_info_table, "应用包名", package_name)
+        self.add_table_row(self.app_info_table, package_name_row, package_name)
         self.add_table_row(self.app_info_table, "默认应用名", default_app_name)
         self.add_table_row(self.app_info_table, "中文应用名", chinese_app_name)
         self.add_table_row(self.app_info_table, "版本号", version_name)
         self.add_table_row(self.app_info_table, "内部版本号", version_code)
-        self.add_table_row(self.app_info_table, "CPU架构", arch_display_text if arch_display_text else "-", arch_tooltip)
+        self.add_table_row(self.app_info_table, arch_row_name, arch_display_text if arch_display_text else "-", arch_tooltip)
         self.add_table_row(self.app_info_table, "最低兼容SDK版本", min_sdk_display)
         self.add_table_row(self.app_info_table, "目标适配SDK版本", target_sdk_display)
         self.add_table_row(self.app_info_table, "编译构建SDK版本", compile_sdk_display)
         
-        # 添加支持语言行（带查看按钮）
-        self._add_locale_row()
+        # 添加支持语言行（带查看按钮），APKS文件时行名加[不准确]标识
+        self._add_locale_row(inaccurate=is_apks)
         
         # 根据内容自动调整第一列列宽
         self.app_info_table.resizeColumnToContents(0)
@@ -9121,11 +9564,14 @@ class ApkHelper(QMainWindow):
             total_height += self.app_info_table.rowHeight(i)
         self.app_info_table.setMaximumHeight(total_height+2)  # 设定表格最大高度
 
-    def _add_locale_row(self):
+    def _add_locale_row(self, inaccurate=False):
         """
         添加支持语言行到基本信息表格。
         
         该行显示语言数量和一个"查看"按钮，点击按钮弹出语言列表详情窗口。
+        
+        Args:
+            inaccurate: 是否为APKS文件模式，为True时行名显示"支持语言[不准确]"
         """
         # 获取语言列表
         locales = self.apk_info.get('locales', [])
@@ -9135,8 +9581,9 @@ class ApkHelper(QMainWindow):
         row = self.app_info_table.rowCount()
         self.app_info_table.insertRow(row)
         
-        # 第一列：属性名
-        self.app_info_table.setItem(row, 0, QTableWidgetItem("支持语言"))
+        # 第一列：属性名（APKS文件时加[不准确]标识）
+        row_name = "支持语言[不准确]" if inaccurate else "支持语言"
+        self.app_info_table.setItem(row, 0, QTableWidgetItem(row_name))
         
         # 第二列：设置文本内容（用于复制功能）
         if locale_count > 0:
@@ -9223,23 +9670,15 @@ class ApkHelper(QMainWindow):
         """
         获取ABI的描述信息。
         
+        调用模块级公共函数get_abi_description，避免重复实现。
+        
         Args:
             abi: ABI名称
             
         Returns:
             str: ABI描述
         """
-        abi_descriptions = {
-            'armeabi': 'ARM 32位 (旧架构)',
-            'armeabi-v7a': 'ARM 32位 (旧架构)',
-            'arm64-v8a': 'ARM 64位 (主流架构)',
-            'x86': 'x86 32位 (旧架构)',
-            'x86_64': 'x86 64位 (非主流架构)',
-            'mips': 'MIPS 32位 (旧架构)',
-            'mips64': 'MIPS 64位 (旧架构)',
-            'riscv64': 'RISC-V 64位 (非主流新兴架构)'
-        }
-        return abi_descriptions.get(abi, '未知架构')
+        return get_abi_description(abi)
 
     def show_parsing_status(self, message):
         """
@@ -9339,6 +9778,48 @@ class ApkHelper(QMainWindow):
         # 传递主窗口中已有的签名信息文本
         signature_text = self.sig_info_text.toPlainText()
         dialog = SignatureDetailsDialog(signature_text, self)
+        dialog.exec_()
+
+    def show_file_info_detail_dialog(self):
+        """
+        显示文件信息详情对话框（仅APKS文件时可用）。
+        
+        打开一个对话框窗口，显示APKS文件的完整详细信息，
+        包括APKS容器信息、分割APK列表和Base APK信息。
+        """
+        if not self.file_info_detail:
+            return
+        
+        dialog = QDialog(self)
+        dialog.setWindowTitle("APKS文件详细信息")
+        dialog.setModal(True)
+        dialog.setMinimumSize(200, 200)
+        dialog.resize(600, 500)  # 设置默认大小
+        
+        layout = QVBoxLayout(dialog)
+        
+        # 文本显示区域
+        text_edit = QTextEdit()
+        text_edit.setReadOnly(True)
+        text_edit.setPlainText(self.file_info_detail)
+        text_edit.setLineWrapMode(QTextEdit.NoWrap)
+        layout.addWidget(text_edit)
+        
+        # 关闭按钮布局（居中显示）
+        close_layout = QHBoxLayout()
+        close_layout.addStretch()
+        
+        close_btn = QPushButton("关闭")
+        close_btn.setMaximumWidth(100)
+        close_btn.clicked.connect(dialog.close)
+        close_layout.addWidget(close_btn)
+        
+        close_layout.addStretch()
+        layout.addLayout(close_layout)
+        
+        # 默认聚焦到关闭按钮
+        close_btn.setFocus()
+        
         dialog.exec_()
 
     def display_file_info(self):
@@ -9482,6 +9963,8 @@ class ApkHelper(QMainWindow):
         self.icon_size_label.setText("")
         self.sig_info_text.setText("")
         self.file_info_text.setText("")
+        self.file_info_detail = None
+        self.show_file_info_detail_btn.setVisible(False)
         
         # 清空表格
         self.app_info_table.setRowCount(0)
@@ -9515,11 +9998,11 @@ class ApkHelper(QMainWindow):
 
     def select_apk_file(self):
         """
-        选择APK文件并解析。
+        选择APK/APKS文件并解析。
         
-        打开文件选择对话框，选择APK文件后调用解析方法。
+        打开文件选择对话框，支持选择APK和APKS文件，选择后调用解析方法。
         """
-        file_path, _ = QFileDialog.getOpenFileName(self, "选择APK文件", "", "APK 文件 (*.apk);;所有文件 (*)")
+        file_path, _ = QFileDialog.getOpenFileName(self, "选择APK/APKS文件", "", "APK/APKS 文件 (*.apk;*.apks);;APK 文件 (*.apk);;APKS 文件 (*.apks);;所有文件 (*.*)")
         if file_path:
             self.get_apk_info(file_path)
 
@@ -10223,6 +10706,7 @@ class ApkHelper(QMainWindow):
         按照自定义格式复制APK信息到剪贴板。
         
         根据用户设置的格式模板，将APK信息格式化后复制到系统剪贴板。
+        文件大小和MD5直接从apk_info字典获取，不再从UI文本中解析。
         """
         if not self.apk_info:
             QMessageBox.warning(self, "警告", "请先解析APK文件")
@@ -10232,10 +10716,6 @@ class ApkHelper(QMainWindow):
         
         try:
             info = self.apk_info
-            icon_info = self.apk_icon_info if hasattr(self, 'apk_icon_info') else {}
-            
-            file_info_text = self.file_info_text.toPlainText()
-            file_info_lines = file_info_text.split('\n') if file_info_text else []
             
             cert_md5 = ''
             if self.certs and len(self.certs) > 0:
@@ -10252,8 +10732,8 @@ class ApkHelper(QMainWindow):
                 "compile_sdk_version": info.get('compile_sdk_version', ''),
                 "arch_support": info.get('arch_support', {}).get('display_text', ''),
                 "permissions_count": str(len(info.get('permissions', []))),
-                "file_size": file_info_lines[2].split(': ', 1)[1].strip() if len(file_info_lines) > 2 else '',
-                "file_md5": file_info_lines[1].split(': ', 1)[1].strip() if len(file_info_lines) > 1 else '',
+                "file_size": info.get('file_size', ''),
+                "file_md5": info.get('file_md5', ''),
                 "cert_md5": cert_md5,
             }
             
@@ -10854,6 +11334,16 @@ class ApkHelper(QMainWindow):
             "不勾选时，如果目标文件名已存在，则该文件重命名失败。"
         )
         batch_rename_group_layout.addWidget(auto_number_checkbox)
+        
+        include_apks_checkbox = QCheckBox("同时处理APKS文件")
+        include_apks_checkbox.setChecked(config.get("rename_include_apks", DEFAULT_CONFIG["rename_include_apks"]))
+        include_apks_checkbox.setToolTip(
+            "勾选后，批量重命名时将同时查找并处理目录下的APKS文件。\n\n"
+            "APKS文件是Android App Bundle的分包格式，内部包含base APK和多个分割APK。\n"
+            "重命名APKS文件时，会先提取内部的base APK获取应用信息，再按模板重命名。\n\n"
+            "不勾选时，仅查找和处理APK文件。"
+        )
+        batch_rename_group_layout.addWidget(include_apks_checkbox)
         
         batch_rename_layout.addWidget(batch_rename_group)
         
@@ -11463,20 +11953,23 @@ class ApkHelper(QMainWindow):
             
             include_subdir = include_subdir_checkbox.isChecked()
             auto_number = auto_number_checkbox.isChecked()
+            include_apks = include_apks_checkbox.isChecked()
             
             apk_files = []
             if include_subdir:
                 for root, dirs, files in os.walk(dir_path):
                     for file in files:
-                        if file.lower().endswith('.apk'):
+                        lower_file = file.lower()
+                        if lower_file.endswith('.apk') or (include_apks and lower_file.endswith('.apks')):
                             apk_files.append(os.path.join(root, file))
             else:
                 for file in os.listdir(dir_path):
-                    if file.lower().endswith('.apk'):
+                    lower_file = file.lower()
+                    if lower_file.endswith('.apk') or (include_apks and lower_file.endswith('.apks')):
                         apk_files.append(os.path.join(dir_path, file))
             
             if not apk_files:
-                QMessageBox.information(dialog, "提示", "未找到APK文件")
+                QMessageBox.information(dialog, "提示", "未找到APK文件" + ("或APKS文件" if include_apks else ""))
                 return
             
             app_logger.info(f"开始批量重命名，目录: {dir_path}, 文件数: {len(apk_files)}, 包含子目录: {include_subdir}, 自动编号: {auto_number}")
@@ -11494,6 +11987,7 @@ class ApkHelper(QMainWindow):
             
             progress_text = QTextEdit()
             progress_text.setReadOnly(True)
+            progress_text.setLineWrapMode(QTextEdit.NoWrap)  # 关闭自动换行
             progress_layout.addWidget(progress_text)
             
             btn_layout = QHBoxLayout()
@@ -11592,8 +12086,9 @@ class ApkHelper(QMainWindow):
             config["rename_format"] = rename_format
             config["rename_include_subdir"] = include_subdir_checkbox.isChecked()
             config["rename_auto_number"] = auto_number_checkbox.isChecked()
+            config["rename_include_apks"] = include_apks_checkbox.isChecked()
             if save_config():
-                app_logger.info(f"批量重命名设置已保存: {rename_format}, 自动编号: {auto_number_checkbox.isChecked()}")
+                app_logger.info(f"批量重命名设置已保存: {rename_format}, 自动编号: {auto_number_checkbox.isChecked()}, 处理APKS: {include_apks_checkbox.isChecked()}")
                 QMessageBox.information(dialog, "成功", "批量重命名设置已保存")
             else:
                 QMessageBox.warning(dialog, "警告", "配置保存失败")
@@ -11603,6 +12098,7 @@ class ApkHelper(QMainWindow):
             rename_format_edit.setText(DEFAULT_CONFIG["rename_format"])
             include_subdir_checkbox.setChecked(DEFAULT_CONFIG["rename_include_subdir"])
             auto_number_checkbox.setChecked(DEFAULT_CONFIG["rename_auto_number"])
+            include_apks_checkbox.setChecked(DEFAULT_CONFIG["rename_include_apks"])
             app_logger.debug("批量重命名设置已恢复默认值")
         
         batch_rename_save_btn.clicked.connect(save_batch_rename_settings)
@@ -11745,7 +12241,11 @@ class ApkHelper(QMainWindow):
         event.acceptProposedAction()
 
     def get_apk_info(self, apk_path):
-        """获取APK信息核心处理部分，后台线程进行文件解析处理"""
+        """
+        获取APK/APKS信息核心处理部分，后台线程进行文件解析处理。
+        
+        自动识别文件类型（APK或APKS），对于APKS文件会先提取base APK再解析。
+        """
         # 禁用主界面控件
         self.disable_main_controls()
         # 处理新apk前，先清空UI
@@ -11754,10 +12254,10 @@ class ApkHelper(QMainWindow):
         # 显示正在解析的状态
         self.show_parsing_status("正在解析应用信息...")
         current_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        app_logger.info(f"[{current_time}] ==== 开始解析文件：{apk_path}", extra={"show_func": False})
+        app_logger.info(f"[{current_time}] ==== 开始解析文件：{os.path.normpath(apk_path)}", extra={"show_func": False})
         
-        # 简单验证文件是否为合规的apk格式文件
-        validation_result, validation_msg = self.validate_apk_file(apk_path)
+        # 验证文件是否为合规的APK/APKS格式文件
+        validation_result, validation_msg, file_type = self.validate_apk_file(apk_path)
         if not validation_result:
             self.show_error_message(validation_msg)
             app_logger.error(f"{validation_msg}")
@@ -11766,8 +12266,10 @@ class ApkHelper(QMainWindow):
         
         # 设置当前APK路径
         self.current_apk_path = apk_path
+        # 保存文件类型
+        self.current_file_type = file_type
         # 调用后台线程，设置回调函数
-        self.worker = ApkWorker(apk_path)
+        self.worker = ApkWorker(apk_path, file_type=file_type)
         self.worker.app_info_finished.connect(self.on_app_info_finished)
         self.worker.signature_info_finished.connect(self.on_signature_info_finished)
         self.worker.file_info_finished.connect(self.on_file_info_finished)
@@ -11783,35 +12285,60 @@ class ApkHelper(QMainWindow):
         self.worker_thread.start()
     
     def validate_apk_file(self, apk_path):
-        """验证APK文件是否有效（检查路径是否为文件、是否为ZIP格式并包含AndroidManifest.xml）"""
+        """
+        验证APK/APKS文件是否有效。
+        
+        检查文件路径有效性、ZIP格式有效性，并自动识别文件类型：
+        - APK文件：ZIP内根目录包含AndroidManifest.xml
+        - APKS文件：ZIP内不包含AndroidManifest.xml，但包含base APK（base-master.apk或base.apk）
+        
+        Args:
+            apk_path: 文件路径
+            
+        Returns:
+            tuple: (验证结果, 错误信息, 文件类型)
+                验证结果: True/False
+                错误信息: 验证失败时的错误描述
+                文件类型: 'apk' / 'apks' / None（验证失败时为None）
+        """
         # 检查路径是否存在
         if not os.path.exists(apk_path):
-            return False, f"解析失败，路径不存在：\n{apk_path}"
+            return False, f"解析失败，路径不存在：\n{apk_path}", None
         
         # 检查路径是否为目录
         if os.path.isdir(apk_path):
-            return False, f"解析失败，路径是目录而非文件：\n{apk_path}"
+            return False, f"解析失败，路径是目录而非文件：\n{apk_path}", None
         
         # 检查路径是否为文件
         if not os.path.isfile(apk_path):
-            return False, f"解析失败，路径不是有效的文件：\n{apk_path}"
+            return False, f"解析失败，路径不是有效的文件：\n{apk_path}", None
         
         try:
             with zipfile.ZipFile(apk_path, 'r') as zip_file:
                 # 1.检查是否为有效的ZIP文件
                 file_list = zip_file.namelist()
-                # 2.检查ZIP文件内根目录下是否存在AndroidManifest.xml
-                has_manifest = any(name == 'AndroidManifest.xml' for name in file_list)
-                if not has_manifest:
-                    return False, f"解析失败，不是一个有效的APK文件(缺少AndroidManifest.xml文件)：\n{apk_path}"
                 
-                return True, "验证通过"
+                # 2.检查ZIP文件内根目录下是否存在AndroidManifest.xml（普通APK文件的特征）
+                has_manifest = any(name == 'AndroidManifest.xml' for name in file_list)
+                if has_manifest:
+                    return True, "验证通过", "apk"
+                
+                # 3.检查是否为APKS文件（包含base APK的ZIP压缩包）
+                # APKS文件内通常包含 base-master.apk 或 base.apk
+                has_base_master = any(name == 'base-master.apk' for name in file_list)
+                has_base_apk = any(name == 'base.apk' for name in file_list)
+                if has_base_master or has_base_apk:
+                    app_logger.info(f"检测到APKS文件格式，包含base APK")
+                    return True, "验证通过", "apks"
+                
+                # 4.既不是APK也不是APKS
+                return False, f"解析失败，不是有效的APK文件(缺少AndroidManifest.xml文件)或APKS文件(缺少base APK文件)：\n{apk_path}", None
         except zipfile.BadZipFile:
-            return False, f"解析失败，不是一个有效的APK文件(不是有效的ZIP格式)：\n{apk_path}"
+            return False, f"解析失败，不是有效的APK或APKS文件(不是有效的ZIP格式)：\n{apk_path}", None
         except PermissionError:
-            return False, f"解析失败，没有权限访问文件：\n{apk_path}"
+            return False, f"解析失败，没有权限访问文件：\n{apk_path}", None
         except Exception as e:
-            return False, f"解析失败，验证APK文件时发生错误：\n{str(e)}"
+            return False, f"解析失败，验证文件时发生错误：\n{str(e)}", None
     
     def cancel_parsing(self):
         """取消当前解析操作"""
@@ -11886,19 +12413,24 @@ class ApkHelper(QMainWindow):
         # 检查是否所有信息都已获取，如果是则启用主控件
         self.check_all_info_completed()
     
-    def on_file_info_finished(self, file_info, error_message, done):
+    def on_file_info_finished(self, file_info, file_info_detail, error_message, done):
         """处理文件信息解析完成的回调"""
         # 保存文件信息
         self.file_info = file_info
+        self.file_info_detail = file_info_detail if file_info_detail else None
         self.file_info_status = done
         
         # 检查是否有错误
         if error_message:
             app_logger.error(f"文件信息解析失败: {error_message}")
             self.file_info_text.setText(f"文件信息解析失败：\n{error_message}")
+            self.show_file_info_detail_btn.setVisible(False)
         else:
             # 显示文件信息
             self.file_info_text.setText(self.file_info)
+            # 解析APKS文件时显示详情按钮
+            is_apks = self.current_file_type == 'apks'
+            self.show_file_info_detail_btn.setVisible(is_apks and self.file_info_detail is not None)
         QApplication.processEvents()  # 强制更新UI
         
         # 检查是否所有信息都已获取，如果是则启用主控件
@@ -12144,6 +12676,7 @@ class SignatureDetailsDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("签名详情")
         self.setModal(True)
+        self.setMinimumSize(300, 200)
         self.resize(600, 500)  # 设置默认大小
         
         layout = QVBoxLayout()
@@ -12151,6 +12684,7 @@ class SignatureDetailsDialog(QDialog):
         # 创建只读文本框显示签名信息
         self.signature_text = QTextEdit()
         self.signature_text.setReadOnly(True)  # 设置为只读，允许选择复制
+        self.signature_text.setLineWrapMode(QTextEdit.NoWrap)  # 关闭自动换行
         self.signature_text.setText(signature_text)
         layout.addWidget(self.signature_text)
         
@@ -12303,16 +12837,182 @@ class SignatureDetailsDialog(QDialog):
         else:
             return None
 
+def get_abi_description(abi):
+    """
+    获取ABI的描述信息。
+    
+    Args:
+        abi: ABI名称
+        
+    Returns:
+        str: ABI描述
+    """
+    abi_descriptions = {
+        'armeabi': 'ARM 32位 (旧架构)',
+        'armeabi-v7a': 'ARM 32位 (旧架构)',
+        'arm64-v8a': 'ARM 64位 (主流架构)',
+        'x86': 'x86 32位 (旧架构)',
+        'x86_64': 'x86 64位 (非主流架构)',
+        'mips': 'MIPS 32位 (旧架构)',
+        'mips64': 'MIPS 64位 (旧架构)',
+        'riscv64': 'RISC-V 64位 (非主流新兴架构)'
+    }
+    return abi_descriptions.get(abi, '未知架构')
+
+def calc_file_md5(file_path):
+    """
+    计算文件的MD5值。
+    
+    以8192字节分块读取文件，计算MD5哈希值并返回大写十六进制字符串。
+    
+    Args:
+        file_path: 文件路径
+        
+    Returns:
+        str: MD5值（大写十六进制字符串），计算失败时返回None
+    """
+    try:
+        md5_hash = hashlib.md5()
+        with open(file_path, 'rb') as f:
+            while True:
+                chunk = f.read(8192)
+                if not chunk:
+                    break
+                md5_hash.update(chunk)
+        return md5_hash.hexdigest().upper()
+    except Exception:
+        return None
+
+def format_file_size(size_bytes):
+    """
+    将文件大小（字节数）格式化为易读的字符串。
+    
+    根据大小自动选择合适的单位（B/KB/MB）。
+    
+    Args:
+        size_bytes: 文件大小（字节数）
+        
+    Returns:
+        str: 格式化后的大小字符串，如 "12.34 MB"、"56.78 KB"、"1024 B"
+    """
+    if size_bytes >= 1024 * 1024:
+        return f"{size_bytes / (1024 * 1024):.2f} MB"
+    elif size_bytes >= 1024:
+        return f"{size_bytes / 1024:.2f} KB"
+    else:
+        return f"{size_bytes} B"
+
+def extract_apks_base_apk(apks_path, temp_dir=None):
+    """
+    从APKS文件中提取base APK到临时目录，并收集APKS容器信息。
+    
+    APKS文件是ZIP格式，内部包含base-master.apk或base.apk作为基础APK。
+    此函数仅将base APK解压到临时目录（aapt2需要读取），其他分割APK
+    不解压，仅从ZIP索引中读取文件名和大小，以减少磁盘IO和临时空间占用。
+    
+    Args:
+        apks_path: APKS文件的完整路径
+        temp_dir: 临时目录路径，如果为None则自动创建
+        
+    Returns:
+        tuple: (base_apk_path, temp_dir, apks_meta)
+            base_apk_path: 提取的base APK文件路径
+            temp_dir: 临时目录路径（调用者负责清理）
+            apks_meta: APKS容器元信息字典，包含：
+                - base_apk_name: base APK文件名
+                - has_toc_pb: 是否存在toc.pb索引文件
+                - split_apks: 分割APK信息列表 [{'name': str, 'size': int}, ...]
+            
+    Raises:
+        ValueError: 如果APKS文件中找不到base APK，或base APK不是有效的ZIP格式
+        zipfile.BadZipFile: 如果APKS文件不是有效的ZIP格式
+    """
+    if temp_dir is None:
+        try:
+            temp_dir = tempfile.mkdtemp(prefix="apk_helper_apks_")
+        except OSError as e:
+            raise ValueError(f"创建临时目录失败（磁盘空间不足或权限问题）: {e}")
+    
+    has_toc_pb = False
+    split_apks = []
+    base_apk_name = None
+    
+    with zipfile.ZipFile(apks_path, 'r') as zf:
+        file_list = zf.namelist()
+        
+        # 优先查找 base-master.apk，其次查找 base.apk
+        if 'base-master.apk' in file_list:
+            base_apk_name = 'base-master.apk'
+        elif 'base.apk' in file_list:
+            base_apk_name = 'base.apk'
+        
+        if not base_apk_name:
+            raise ValueError("APKS文件中找不到base APK（base-master.apk或base.apk）")
+        
+        # 如果同时存在base-master.apk和base.apk，记录警告
+        if 'base-master.apk' in file_list and 'base.apk' in file_list:
+            app_logger.info("APKS文件中同时存在 base-master.apk 和 base.apk，优先使用 base-master.apk")
+        
+        # 检查toc.pb是否存在
+        has_toc_pb = 'toc.pb' in file_list
+        
+        # 仅解压base APK到临时目录（aapt2需要读取实际文件）
+        base_apk_path = os.path.join(temp_dir, base_apk_name)
+        with zf.open(base_apk_name) as src, open(base_apk_path, 'wb') as dst:
+            shutil.copyfileobj(src, dst)
+        
+        # 收集分割APK信息（不解压，仅从ZIP索引中读取文件名和大小）
+        for name in file_list:
+            if name == base_apk_name or name == 'toc.pb' or name.endswith('/'):
+                continue
+            if name.lower().endswith('.apk'):
+                info = zf.getinfo(name)
+                split_apks.append({
+                    'name': name,
+                    'size': info.file_size,
+                })
+    
+    # 验证解压出的base APK是否为有效ZIP格式
+    try:
+        with zipfile.ZipFile(base_apk_path, 'r') as test_zf:
+            test_zf.namelist()
+    except zipfile.BadZipFile:
+        raise ValueError(f"APKS文件中的base APK ({base_apk_name}) 不是有效的ZIP格式，文件可能已损坏")
+    
+    apks_meta = {
+        'base_apk_name': base_apk_name,
+        'has_toc_pb': has_toc_pb,
+        'split_apks': split_apks,
+    }
+    
+    return base_apk_path, temp_dir, apks_meta
+
+def cleanup_temp_dir(temp_dir):
+    """
+    清理临时目录。
+    
+    安全删除临时目录及其中的所有文件，释放磁盘空间。
+    
+    Args:
+        temp_dir: 临时目录路径
+    """
+    if temp_dir and os.path.exists(temp_dir):
+        try:
+            shutil.rmtree(temp_dir)
+        except Exception as e:
+            app_logger.warning(f"清理临时目录失败: {e}")
+
 
 def get_apk_basic_info(apk_path):
     """
-    获取APK文件的基本信息（用于批量处理）
+    获取APK/APKS文件的基本信息（用于批量处理）
     
-    创建临时的APKParser实例，快速获取APK的基本信息，
+    创建临时的APKParser实例，快速获取APK/APKS的基本信息，
     包括包名、应用名、版本号等。适用于批量处理场景。
+    对于APKS文件，会先提取base APK到临时目录再解析。
     
     Args:
-        apk_path: APK文件的完整路径
+        apk_path: APK/APKS文件的完整路径
     
     Returns:
         dict: 包含基本信息的字典，格式如下：
@@ -12334,65 +13034,81 @@ def get_apk_basic_info(apk_path):
         如果解析失败则返回 None
     """
     try:
-        parser = APKParser(apk_path)
-        basic_info = parser.get_basic_info()
+        # 判断是否为APKS文件，如果是则提取base APK到临时目录
+        actual_apk_path = apk_path
+        temp_dir = None
+        is_apks = apk_path.lower().endswith('.apks')
         
-        if not basic_info:
-            app_logger.warning(f"无法获取APK基本信息: {apk_path}")
-            return None
+        if is_apks:
+            # 先创建临时目录，确保异常时能正确清理
+            try:
+                temp_dir = tempfile.mkdtemp(prefix="apk_helper_apks_")
+            except OSError as e:
+                raise ValueError(f"创建临时目录失败（磁盘空间不足或权限问题）: {e}")
+            try:
+                actual_apk_path, _, _ = extract_apks_base_apk(apk_path, temp_dir=temp_dir)
+            except ValueError:
+                raise
+            except Exception as e:
+                raise ValueError(f"APKS文件提取失败: {e}")
         
-        arch_info = parser.analyze_arch_support()
-        permissions = parser.get_permissions()
-        sig_info = parser.get_signature_info()
-        
-        file_size = os.path.getsize(apk_path)
-        if file_size >= 1024 * 1024:
-            file_size_str = f"{file_size / (1024 * 1024):.2f} MB"
-        elif file_size >= 1024:
-            file_size_str = f"{file_size / 1024:.2f} KB"
-        else:
-            file_size_str = f"{file_size} B"
-        
-        md5_hash = hashlib.md5()
-        with open(apk_path, 'rb') as f:
-            for chunk in iter(lambda: f.read(8192), b''):
-                md5_hash.update(chunk)
-        file_md5_str = md5_hash.hexdigest().upper()
-        
-        cert_md5 = ''
-        certs = sig_info.get('certificates', [])
-        if certs and len(certs) > 0:
-            cert_md5 = certs[0].get('md5', '')
-        
-        result = {
-            'app_name': basic_info.get('application_label', ''),
-            'chinese_app_name': basic_info.get('application_label_zh', ''),
-            'package_name': basic_info.get('package_name', ''),
-            'version_name': basic_info.get('version_name', ''),
-            'version_code': basic_info.get('version_code', ''),
-            'min_sdk_version': basic_info.get('sdk_version', ''),
-            'target_sdk_version': basic_info.get('target_sdk_version', ''),
-            'compile_sdk_version': basic_info.get('compile_sdk_version', ''),
-            'arch_support': arch_info.get('display_text', ''),
-            'permissions_count': len(permissions),
-            'file_size': file_size_str,
-            'file_md5': file_md5_str,
-            'cert_md5': cert_md5
-        }
-        
-        app_logger.debug(f"成功获取APK基本信息: {apk_path} -> {result.get('package_name', 'unknown')}")
-        return result
+        parser = None
+        try:
+            parser = APKParser(actual_apk_path)
+            basic_info = parser.get_basic_info()
+            
+            if not basic_info:
+                app_logger.warning(f"无法获取APK/APKS基本信息: {os.path.normpath(apk_path)}")
+                return None
+            
+            arch_info = parser.analyze_arch_support()
+            permissions = parser.get_permissions()
+            sig_info = parser.get_signature_info()
+            
+            # 文件大小和MD5使用原始文件路径（APKS文件使用APKS容器的大小和MD5）
+            file_size = os.path.getsize(apk_path)
+            file_size_str = format_file_size(file_size)
+            file_md5_str = calc_file_md5(apk_path) or ''
+            
+            cert_md5 = ''
+            certs = sig_info.get('certificates', [])
+            if certs and len(certs) > 0:
+                cert_md5 = certs[0].get('md5', '')
+            
+            result = {
+                'app_name': basic_info.get('application_label', ''),
+                'chinese_app_name': basic_info.get('application_label_zh', '') or basic_info.get('application_label', ''),
+                'package_name': basic_info.get('package_name', ''),
+                'version_name': basic_info.get('version_name', ''),
+                'version_code': basic_info.get('version_code', ''),
+                'min_sdk_version': basic_info.get('sdk_version', ''),
+                'target_sdk_version': basic_info.get('target_sdk_version', ''),
+                'compile_sdk_version': basic_info.get('compile_sdk_version', ''),
+                'arch_support': arch_info.get('display_text', ''),
+                'permissions_count': len(permissions),
+                'file_size': file_size_str,
+                'file_md5': file_md5_str,
+                'cert_md5': cert_md5
+            }
+            
+            app_logger.debug(f"成功获取APK/APKS基本信息: {os.path.normpath(apk_path)} -> {result.get('package_name', 'unknown')}")
+            return result
+        finally:
+            # 先关闭parser释放文件句柄，再清理临时目录
+            if parser:
+                parser.close()
+            cleanup_temp_dir(temp_dir)
         
     except Exception as e:
-        app_logger.error(f"解析APK基本信息失败: {apk_path}, 错误: {str(e)}")
+        app_logger.error(f"解析APK基本信息失败: {os.path.normpath(apk_path)}, 错误: {str(e)}")
         return None
 
 def batch_process_directory(directory):
     """
-    批量处理目录下所有APK文件
+    批量处理目录下所有APK/APKS文件
     
     参数:
-        directory: APK文件所在目录
+        directory: APK/APKS文件所在目录
     """
     start_time = time.time()
     
@@ -12400,25 +13116,26 @@ def batch_process_directory(directory):
         app_logger.error(f"目录不存在: {directory}")
         return
     
-    # 递归获取所有APK文件
+    # 递归获取所有APK和APKS文件
     apk_files = []
     for root, dirs, files in os.walk(directory):
         for file in files:
-            if file.lower().endswith('.apk'):
+            lower_file = file.lower()
+            if lower_file.endswith('.apk') or lower_file.endswith('.apks'):
                 apk_files.append(os.path.join(root, file))
     
     # 按文件名排序
     apk_files = sorted(apk_files, key=lambda x: os.path.basename(x).lower())
     
     if not apk_files:
-        app_logger.warning(f"在目录 {directory} 下未找到APK文件")
+        app_logger.warning(f"在目录 {directory} 下未找到APK/APKS文件")
         return
     
     total_count = len(apk_files)
     success_count = 0
     fail_count = 0
     
-    app_logger.info(f"找到 {total_count} 个APK文件")
+    app_logger.info(f"找到 {total_count} 个APK/APKS文件")
     app_logger.info(f"开始批量处理目录: {directory}")
     
     for i, apk_path in enumerate(apk_files, 1):
@@ -12428,15 +13145,35 @@ def batch_process_directory(directory):
         
         apk_start_time = time.time()
         try:
-            with APKParser(apk_path) as parser:
-                saved_count = parser.save_all_xml_icons()
-                apk_elapsed_time = time.time() - apk_start_time
-                if saved_count >= 0:
-                    success_count += 1
-                    app_logger.info(f"  -> 成功，保存了 {saved_count} 个XML图标，耗时: {apk_elapsed_time:.2f}秒")
-                else:
-                    fail_count += 1
-                    app_logger.warning(f"  -> 失败，耗时: {apk_elapsed_time:.2f}秒")
+            # 判断文件类型，如果是APKS文件需要先提取base APK
+            actual_apk_path = apk_path
+            temp_dir = None
+            is_apks = apk_path.lower().endswith('.apks')
+            
+            if is_apks:
+                # APKS文件：先创建临时目录，确保异常时能正确清理
+                try:
+                    temp_dir = tempfile.mkdtemp(prefix="apk_helper_apks_")
+                except OSError as e:
+                    raise ValueError(f"创建临时目录失败（磁盘空间不足或权限问题）: {e}")
+                try:
+                    actual_apk_path, _, _ = extract_apks_base_apk(apk_path, temp_dir=temp_dir)
+                except Exception as e:
+                    raise ValueError(f"APKS文件提取失败: {e}")
+            
+            try:
+                with APKParser(actual_apk_path) as parser:
+                    saved_count = parser.save_all_xml_icons()
+                    apk_elapsed_time = time.time() - apk_start_time
+                    if saved_count >= 0:
+                        success_count += 1
+                        app_logger.info(f"  -> 成功，保存了 {saved_count} 个XML图标，耗时: {apk_elapsed_time:.2f}秒")
+                    else:
+                        fail_count += 1
+                        app_logger.warning(f"  -> 失败，耗时: {apk_elapsed_time:.2f}秒")
+            finally:
+                # 清理APKS临时目录
+                cleanup_temp_dir(temp_dir)
         except Exception as e:
             apk_elapsed_time = time.time() - apk_start_time
             fail_count += 1
